@@ -154,6 +154,12 @@ pub const MAP_FIXED_NOREPLACE = 0x100000;
 /// For anonymous mmap, memory could be uninitialized
 pub const MAP_UNINITIALIZED = 0x4000000;
 
+/// The new mapping may be placed at another address
+pub const MREMAP_MAYMOVE = 0x01;
+
+/// Place the new mapping at an exact address
+pub const MREMAP_FIXED = 0x02;
+
 pub const FD_CLOEXEC = 1;
 
 pub const F_OK = 0;

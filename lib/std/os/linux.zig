@@ -227,6 +227,17 @@ pub fn munmap(address: [*]const u8, length: usize) usize {
     return syscall2(.munmap, @ptrToInt(address), length);
 }
 
+pub fn mremap(old_address: [*]const u8, old_length: usize, new_length: usize, flags: u32, new_address: ?[*]u8) usize {
+    return syscall5(
+        .mremap,
+        @ptrToInt(old_address),
+        old_length,
+        new_length,
+        flags,
+        @ptrToInt(new_address),
+    );
+}
+
 pub fn poll(fds: [*]pollfd, n: nfds_t, timeout: i32) usize {
     if (@hasField(SYS, "poll")) {
         return syscall3(.poll, @ptrToInt(fds), n, @bitCast(u32, timeout));

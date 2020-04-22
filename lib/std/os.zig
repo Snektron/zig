@@ -370,7 +370,7 @@ pub fn readv(fd: fd_t, iov: []const iovec) ReadError!usize {
         const first = iov[0];
         return read(fd, first.iov_base[0..first.iov_len]);
     }
-    
+
     const iov_count = math.cast(u31, iov.len) catch math.maxInt(u31);
     while (true) {
         // TODO handle the case when iov_len is too large and get rid of this @intCast
@@ -2841,6 +2841,40 @@ pub fn munmap(memory: []align(mem.page_size) u8) void {
         0 => return,
         EINVAL => unreachable, // Invalid parameters.
         ENOMEM => unreachable, // Attempted to unmap a region in the middle of an existing mapping.
+        else => unreachable,
+    }
+}
+
+pub const MRemapError = error {
+    OutOfMemory,
+    LockedMemoryLimitExceeded,
+} || UnexpectedError;
+
+/// Grow or shrink a mapped area of memory.
+/// If `flags` contains `MREMAP_FIXED`, `new_address` most not be null:
+/// the mapping is moved to this exact address if possible.
+pub fn mremap(
+    old_memory: []align(mem.page_size) u8,
+    new_length: usize,
+    flags: u32,
+    new_address: ?[*]align(mem.page_size) u8,
+) MRemapError![]align(mem.page_size) u8 {
+    const err = if (builtin.link_libc) blk: {
+        const rc = std.c.mremap(old_memory.ptr, old_memory.len, new_length, flags, new_address);
+        if (rc != std.c.MAP_FAILED) return @ptrCast([*]align(mem.page_size) u8, @alignCast(mem.page_size, rc))[0..new_length];
+        break :blk @intCast(usize, system._errno().*);
+    } else blk: {
+        const rc = system.mremap(old_memory.ptr, old_memory.len, new_length, flags, new_address);
+        const err = errno(rc);
+        if (err == 0) return @intToPtr([*]align(mem.page_size) u8, rc)[0..new_length];
+        break :blk err;
+    };
+
+    switch (err) {
+        EAGAIN => return error.LockedMemoryLimitExceeded,
+        EFAULT => unreachable, // Some memory in old_memory was not mapped.
+        EINVAL => unreachable, // Invalid parameters.
+        ENOMEM => return error.OutOfMemory,
         else => unreachable,
     }
 }
