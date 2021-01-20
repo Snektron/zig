@@ -592,7 +592,7 @@ pub const Target = struct {
             pub const Set = struct {
                 ints: [usize_count]usize,
 
-                pub const needed_bit_count = 168;
+                pub const needed_bit_count = 256;
                 pub const byte_count = (needed_bit_count + 7) / 8;
                 pub const usize_count = (byte_count + (@sizeOf(usize) - 1)) / @sizeOf(usize);
                 pub const Index = std.math.Log2Int(std.meta.Int(.unsigned, usize_count * @bitSizeOf(usize)));
@@ -600,6 +600,7 @@ pub const Target = struct {
 
                 pub const empty = Set{ .ints = [1]usize{0} ** usize_count };
                 pub fn empty_workaround() Set {
+                    @setEvalBranchQuota(2000);
                     return Set{ .ints = [1]usize{0} ** usize_count };
                 }
 
@@ -807,6 +808,13 @@ pub const Target = struct {
             pub fn isSPARC(arch: Arch) bool {
                 return switch (arch) {
                     .sparc, .sparcel, .sparcv9 => true,
+                    else => false,
+                };
+            }
+
+            pub fn isSPIRV(arch: Arch) bool {
+                return switch (arch) {
+                    .spirv32, .spirv64 => true,
                     else => false,
                 };
             }
@@ -1106,6 +1114,7 @@ pub const Target = struct {
                     .i386, .x86_64 => &x86.all_features,
                     .nvptx, .nvptx64 => &nvptx.all_features,
                     .wasm32, .wasm64 => &wasm.all_features,
+                    .spirv32, .spirv64 => &spirv.all_features,
 
                     else => &[0]Cpu.Feature{},
                 };
@@ -1348,7 +1357,7 @@ pub const Target = struct {
     }
 
     pub fn supportsNewStackCall(self: Target) bool {
-        return !self.cpu.arch.isWasm();
+        return !self.cpu.arch.isWasm() and !self.cpu.arch.isSPIRV();
     }
 
     pub const FloatAbi = enum {
