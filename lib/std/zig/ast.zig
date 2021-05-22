@@ -275,6 +275,9 @@ pub const Tree = struct {
             .extra_volatile_qualifier => {
                 return stream.writeAll("extra volatile qualifier");
             },
+            .extra_addrspace_qualifier => {
+                return stream.writeAll("extra addrspace qualifier");
+            },
             .ptr_mod_on_array_child_type => {
                 return stream.print("pointer modifier '{s}' not allowed on array child type", .{
                     token_tags[parse_error.token].symbol(),
@@ -908,7 +911,10 @@ pub const Tree = struct {
                     n = datas[n].rhs;
                 } else {
                     const extra = tree.extraData(datas[n].lhs, Node.GlobalVarDecl);
-                    if (extra.section_node != 0) {
+                    if (extra.addrspace_node != 0) {
+                        end_offset += 1; // for the rparen
+                        n = extra.addrspace_node;
+                    } else if (extra.section_node != 0) {
                         end_offset += 1; // for the rparen
                         n = extra.section_node;
                     } else if (extra.align_node != 0) {
@@ -1058,6 +1064,14 @@ pub const Tree = struct {
                         max_offset = 1; // for the rparen
                     }
                 }
+                if (extra.addrspace_expr != 0) {
+                    const start = token_starts[main_tokens[extra.addrspace_expr]];
+                    if (start > max_start) {
+                        max_node = extra.addrspace_expr;
+                        max_start = start;
+                        max_offset = 1; // for the rparen
+                    }
+                }
                 n = max_node;
                 end_offset += max_offset;
             },
@@ -1088,6 +1102,14 @@ pub const Tree = struct {
                     const start = token_starts[main_tokens[extra.callconv_expr]];
                     if (start > max_start) {
                         max_node = extra.callconv_expr;
+                        max_start = start;
+                        max_offset = 1; // for the rparen
+                    }
+                }
+                if (extra.addrspace_expr != 0) {
+                    const start = token_starts[main_tokens[extra.addrspace_expr]];
+                    if (start > max_start) {
+                        max_node = extra.addrspace_expr;
                         max_start = start;
                         max_offset = 1; // for the rparen
                     }
@@ -1147,6 +1169,7 @@ pub const Tree = struct {
             .type_node = extra.type_node,
             .align_node = extra.align_node,
             .section_node = extra.section_node,
+            .addrspace_node = extra.addrspace_node,
             .init_node = data.rhs,
             .mut_token = tree.nodes.items(.main_token)[node],
         });
@@ -1160,6 +1183,7 @@ pub const Tree = struct {
             .type_node = extra.type_node,
             .align_node = extra.align_node,
             .section_node = 0,
+            .addrspace_node = 0,
             .init_node = data.rhs,
             .mut_token = tree.nodes.items(.main_token)[node],
         });
@@ -1172,6 +1196,7 @@ pub const Tree = struct {
             .type_node = data.lhs,
             .align_node = 0,
             .section_node = 0,
+            .addrspace_node = 0,
             .init_node = data.rhs,
             .mut_token = tree.nodes.items(.main_token)[node],
         });
@@ -1184,6 +1209,7 @@ pub const Tree = struct {
             .type_node = 0,
             .align_node = data.lhs,
             .section_node = 0,
+            .addrspace_node = 0,
             .init_node = data.rhs,
             .mut_token = tree.nodes.items(.main_token)[node],
         });
@@ -1259,6 +1285,7 @@ pub const Tree = struct {
             .align_expr = 0,
             .section_expr = 0,
             .callconv_expr = 0,
+            .addrspace_expr = 0,
         });
     }
 
@@ -1275,6 +1302,7 @@ pub const Tree = struct {
             .align_expr = 0,
             .section_expr = 0,
             .callconv_expr = 0,
+            .addrspace_expr = 0,
         });
     }
 
@@ -1292,6 +1320,7 @@ pub const Tree = struct {
             .align_expr = extra.align_expr,
             .section_expr = extra.section_expr,
             .callconv_expr = extra.callconv_expr,
+            .addrspace_expr = extra.addrspace_expr,
         });
     }
 
@@ -1308,6 +1337,7 @@ pub const Tree = struct {
             .align_expr = extra.align_expr,
             .section_expr = extra.section_expr,
             .callconv_expr = extra.callconv_expr,
+            .addrspace_expr = extra.addrspace_expr,
         });
     }
 
@@ -1464,6 +1494,7 @@ pub const Tree = struct {
             .sentinel = 0,
             .bit_range_start = 0,
             .bit_range_end = 0,
+            .addrspace_node = 0,
             .child_type = data.rhs,
         });
     }
@@ -1477,6 +1508,7 @@ pub const Tree = struct {
             .sentinel = data.lhs,
             .bit_range_start = 0,
             .bit_range_end = 0,
+            .addrspace_node = 0,
             .child_type = data.rhs,
         });
     }
@@ -1491,6 +1523,7 @@ pub const Tree = struct {
             .sentinel = extra.sentinel,
             .bit_range_start = 0,
             .bit_range_end = 0,
+            .addrspace_node = extra.addrspace_node,
             .child_type = data.rhs,
         });
     }
@@ -1505,6 +1538,7 @@ pub const Tree = struct {
             .sentinel = extra.sentinel,
             .bit_range_start = extra.bit_range_start,
             .bit_range_end = extra.bit_range_end,
+            .addrspace_node = extra.addrspace_node,
             .child_type = data.rhs,
         });
     }
@@ -1894,7 +1928,7 @@ pub const Tree = struct {
         // We need to be careful that we don't iterate over any sub-expressions
         // here while looking for modifiers as that could result in false
         // positives. Therefore, start after a sentinel if there is one and
-        // skip over any align node and bit range nodes.
+        // skip over any align, addrspace, and bit range nodes.
         var i = if (info.sentinel != 0) tree.lastToken(info.sentinel) + 1 else info.main_token;
         const end = tree.firstToken(info.child_type);
         while (i < end) : (i += 1) {
@@ -1910,6 +1944,10 @@ pub const Tree = struct {
                     } else {
                         i = tree.lastToken(info.align_node) + 1;
                     }
+                },
+                .keyword_addrspace => {
+                    assert(info.addrspace_node != 0);
+                    i = tree.lastToken(info.addrspace_node) + 1;
                 },
                 else => {},
             }
@@ -2069,6 +2107,7 @@ pub const full = struct {
             type_node: Node.Index,
             align_node: Node.Index,
             section_node: Node.Index,
+            addrspace_node: Node.Index,
             init_node: Node.Index,
         };
     };
@@ -2137,6 +2176,7 @@ pub const full = struct {
             align_expr: Node.Index,
             section_expr: Node.Index,
             callconv_expr: Node.Index,
+            addrspace_expr: Node.Index,
         };
 
         pub const Param = struct {
@@ -2293,6 +2333,7 @@ pub const full = struct {
             sentinel: Node.Index,
             bit_range_start: Node.Index,
             bit_range_end: Node.Index,
+            addrspace_node: Node.Index,
             child_type: Node.Index,
         };
     };
@@ -2403,6 +2444,7 @@ pub const Error = struct {
         extra_allowzero_qualifier,
         extra_const_qualifier,
         extra_volatile_qualifier,
+        extra_addrspace_qualifier,
         ptr_mod_on_array_child_type,
         invalid_and,
         invalid_bit_range,
@@ -2903,6 +2945,7 @@ pub const Node = struct {
     pub const PtrType = struct {
         sentinel: Index,
         align_node: Index,
+        addrspace_node: Index,
     };
 
     pub const PtrTypeBitRange = struct {
@@ -2910,6 +2953,7 @@ pub const Node = struct {
         align_node: Index,
         bit_range_start: Index,
         bit_range_end: Index,
+        addrspace_node: Index,
     };
 
     pub const SubRange = struct {
@@ -2933,6 +2977,7 @@ pub const Node = struct {
         type_node: Index,
         align_node: Index,
         section_node: Index,
+        addrspace_node: Index,
     };
 
     pub const Slice = struct {
@@ -2967,6 +3012,8 @@ pub const Node = struct {
         section_expr: Index,
         /// Populated if callconv(A) is present.
         callconv_expr: Index,
+        /// Populated if addrspace(A) is present.
+        addrspace_expr: Index,
     };
 
     pub const FnProto = struct {
@@ -2978,6 +3025,8 @@ pub const Node = struct {
         section_expr: Index,
         /// Populated if callconv(A) is present.
         callconv_expr: Index,
+        /// Populated if addrspace(A) is present.
+        addrspace_expr: Index,
     };
 
     pub const Asm = struct {
