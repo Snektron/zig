@@ -39,7 +39,6 @@ pub const Instruction = struct {
     capabilities: [][]const u8 = &[_][]const u8{},
     extensions: [][]const u8 = &[_][]const u8{},
     version: ?[]const u8 = null,
-
     lastVersion: ?[]const u8 = null,
 };
 
