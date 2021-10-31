@@ -215,7 +215,7 @@ pub const Section = struct {
             return;
         }
 
-        section.writeWord(0);
+        section.writeWord(mask);
 
         inline for (@typeInfo(Operand).Struct.fields) |field| {
             switch (@typeInfo(field.field_type)) {
@@ -363,11 +363,11 @@ test "SPIR-V Builder - simple" {
         .id_result = .{.id = 1},
     }});
 
-    try testing.expectEqualSlices(Word, section.instructions.items, &.{
+    try testing.expectEqualSlices(Word, &.{
         (@as(Word, 3) << 16) | @enumToInt(Opcode.OpUndef),
         0,
         1,
-    });
+    }, section.instructions.items);
 }
 
 test "SPIR-V Builder - string" {
@@ -383,7 +383,7 @@ test "SPIR-V Builder - string" {
         .source = "pub fn main() void {}",
     }});
 
-    try testing.expectEqualSlices(Word, section.instructions.items, &.{
+    try testing.expectEqualSlices(Word, &.{
         (@as(Word, 10) << 16) | @enumToInt(Opcode.OpSource),
         @enumToInt(spec.SourceLanguage.Unknown),
         123,
@@ -394,7 +394,7 @@ test "SPIR-V Builder - string" {
         std.mem.bytesToValue(Word, ") vo"),
         std.mem.bytesToValue(Word, "id {"),
         std.mem.bytesToValue(Word, "}\x00\x00\x00"),
-    });
+    }, section.instructions.items);
 }
 
 test "SPIR-V Builder - extended mask" {
@@ -414,13 +414,13 @@ test "SPIR-V Builder - extended mask" {
         },
     }});
 
-    try testing.expectEqualSlices(Word, section.instructions.items, &.{
+    try testing.expectEqualSlices(Word, &.{
         (@as(Word, 5) << 16) | @enumToInt(Opcode.OpLoopMerge),
         10,
         20,
         @bitCast(Word, spec.LoopControl{.Unroll = true, .DependencyLength = true}),
         2,
-    });
+    }, section.instructions.items);
 }
 
 test "SPIR-V Builder - extended union" {
@@ -436,12 +436,12 @@ test "SPIR-V Builder - extended union" {
         },
     }});
 
-    try testing.expectEqualSlices(Word, section.instructions.items, &.{
+    try testing.expectEqualSlices(Word, &.{
         (@as(Word, 6) << 16) | @enumToInt(Opcode.OpExecutionMode),
         888,
         @enumToInt(spec.ExecutionMode.LocalSize),
         4,
         8,
         16,
-    });
+    }, section.instructions.items);
 }
