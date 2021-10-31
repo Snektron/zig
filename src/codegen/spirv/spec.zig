@@ -4,24 +4,28 @@ const std = @import("std");
 const Version = std.builtin.Version;
 const Tuple = std.meta.Tuple;
 
+pub const Word = u32;
 pub const IdResultType = struct {
-    id: u32,
+    id: Word,
     pub fn toRef(self: IdResultType) IdRef {
         return .{ .id = self.id };
     }
 };
 pub const IdResult = struct {
-    id: u32,
+    id: Word,
     pub fn toRef(self: IdResult) IdRef {
         return .{ .id = self.id };
     }
+    pub fn toResultType(self: IdResult) IdResultType {
+        return .{ .id = self.id };
+    }
 };
-pub const IdRef = struct { id: u32 };
+pub const IdRef = struct { id: Word };
 
 pub const IdMemorySemantics = IdRef;
 pub const IdScope = IdRef;
 
-pub const LiteralInteger = u32;
+pub const LiteralInteger = Word;
 pub const LiteralString = []const u8;
 pub const LiteralContextDependentNumber = union(enum) {
     int32: i32,
@@ -31,10 +35,10 @@ pub const LiteralContextDependentNumber = union(enum) {
     float32: f32,
     float64: f64,
 };
-pub const LiteralExtInstInteger = struct { inst: u32 };
+pub const LiteralExtInstInteger = struct { inst: Word };
 pub const LiteralSpecConstantOpInteger = struct { opcode: Opcode };
-pub const PairLiteralIntegerIdRef = struct { value: u32, label: IdRef };
-pub const PairIdRefLiteralInteger = struct { target: IdRef, member: u32 };
+pub const PairLiteralIntegerIdRef = struct { value: LiteralInteger, label: IdRef };
+pub const PairIdRefLiteralInteger = struct { target: IdRef, member: LiteralInteger };
 pub const PairIdRefIdRef = [2]IdRef;
 
 pub const InstructionInfo = struct {
@@ -44,7 +48,7 @@ pub const InstructionInfo = struct {
     extensions: []const []const u8 = &[_][]const u8{},
 };
 pub const version = Version{ .major = 1, .minor = 5, .patch = 4 };
-pub const magic_number: u32 = 0x07230203;
+pub const magic_number: Word = 0x07230203;
 pub const Opcode = enum(u16) {
     OpNop = 0,
     OpUndef = 1,
@@ -402,12 +406,6 @@ pub const Opcode = enum(u16) {
     OpConvertUToAccelerationStructureKHR = 4447,
     OpIgnoreIntersectionKHR = 4448,
     OpTerminateRayKHR = 4449,
-    OpSDotKHR = 4450,
-    OpUDotKHR = 4451,
-    OpSUDotKHR = 4452,
-    OpSDotAccSatKHR = 4453,
-    OpUDotAccSatKHR = 4454,
-    OpSUDotAccSatKHR = 4455,
     OpTypeRayQueryKHR = 4472,
     OpRayQueryInitializeKHR = 4473,
     OpRayQueryTerminateKHR = 4474,
@@ -433,8 +431,6 @@ pub const Opcode = enum(u16) {
     OpIgnoreIntersectionNV = 5335,
     OpTerminateRayNV = 5336,
     OpTraceNV = 5337,
-    OpTraceMotionNV = 5338,
-    OpTraceRayMotionNV = 5339,
     OpTypeAccelerationStructureKHR = 5341,
     OpExecuteCallableNV = 5344,
     OpTypeCooperativeMatrixNV = 5358,
@@ -446,13 +442,6 @@ pub const Opcode = enum(u16) {
     OpEndInvocationInterlockEXT = 5365,
     OpDemoteToHelperInvocationEXT = 5380,
     OpIsHelperInvocationEXT = 5381,
-    OpConvertUToImageNV = 5391,
-    OpConvertUToSamplerNV = 5392,
-    OpConvertImageToUNV = 5393,
-    OpConvertSamplerToUNV = 5394,
-    OpConvertUToSampledImageNV = 5395,
-    OpConvertSampledImageToUNV = 5396,
-    OpSamplerImageAddressingModeNV = 5397,
     OpSubgroupShuffleINTEL = 5571,
     OpSubgroupShuffleDownINTEL = 5572,
     OpSubgroupShuffleUpINTEL = 5573,
@@ -609,59 +598,7 @@ pub const Opcode = enum(u16) {
     OpVariableLengthArrayINTEL = 5818,
     OpSaveMemoryINTEL = 5819,
     OpRestoreMemoryINTEL = 5820,
-    OpArbitraryFloatSinCosPiINTEL = 5840,
-    OpArbitraryFloatCastINTEL = 5841,
-    OpArbitraryFloatCastFromIntINTEL = 5842,
-    OpArbitraryFloatCastToIntINTEL = 5843,
-    OpArbitraryFloatAddINTEL = 5846,
-    OpArbitraryFloatSubINTEL = 5847,
-    OpArbitraryFloatMulINTEL = 5848,
-    OpArbitraryFloatDivINTEL = 5849,
-    OpArbitraryFloatGTINTEL = 5850,
-    OpArbitraryFloatGEINTEL = 5851,
-    OpArbitraryFloatLTINTEL = 5852,
-    OpArbitraryFloatLEINTEL = 5853,
-    OpArbitraryFloatEQINTEL = 5854,
-    OpArbitraryFloatRecipINTEL = 5855,
-    OpArbitraryFloatRSqrtINTEL = 5856,
-    OpArbitraryFloatCbrtINTEL = 5857,
-    OpArbitraryFloatHypotINTEL = 5858,
-    OpArbitraryFloatSqrtINTEL = 5859,
-    OpArbitraryFloatLogINTEL = 5860,
-    OpArbitraryFloatLog2INTEL = 5861,
-    OpArbitraryFloatLog10INTEL = 5862,
-    OpArbitraryFloatLog1pINTEL = 5863,
-    OpArbitraryFloatExpINTEL = 5864,
-    OpArbitraryFloatExp2INTEL = 5865,
-    OpArbitraryFloatExp10INTEL = 5866,
-    OpArbitraryFloatExpm1INTEL = 5867,
-    OpArbitraryFloatSinINTEL = 5868,
-    OpArbitraryFloatCosINTEL = 5869,
-    OpArbitraryFloatSinCosINTEL = 5870,
-    OpArbitraryFloatSinPiINTEL = 5871,
-    OpArbitraryFloatCosPiINTEL = 5872,
-    OpArbitraryFloatASinINTEL = 5873,
-    OpArbitraryFloatASinPiINTEL = 5874,
-    OpArbitraryFloatACosINTEL = 5875,
-    OpArbitraryFloatACosPiINTEL = 5876,
-    OpArbitraryFloatATanINTEL = 5877,
-    OpArbitraryFloatATanPiINTEL = 5878,
-    OpArbitraryFloatATan2INTEL = 5879,
-    OpArbitraryFloatPowINTEL = 5880,
-    OpArbitraryFloatPowRINTEL = 5881,
-    OpArbitraryFloatPowNINTEL = 5882,
     OpLoopControlINTEL = 5887,
-    OpFixedSqrtINTEL = 5923,
-    OpFixedRecipINTEL = 5924,
-    OpFixedRsqrtINTEL = 5925,
-    OpFixedSinINTEL = 5926,
-    OpFixedCosINTEL = 5927,
-    OpFixedSinCosINTEL = 5928,
-    OpFixedSinPiINTEL = 5929,
-    OpFixedCosPiINTEL = 5930,
-    OpFixedSinCosPiINTEL = 5931,
-    OpFixedLogINTEL = 5932,
-    OpFixedExpINTEL = 5933,
     OpPtrCastToCrossWorkgroupINTEL = 5934,
     OpCrossWorkgroupCastToPtrINTEL = 5938,
     OpReadPipeBlockingINTEL = 5946,
@@ -985,16 +922,16 @@ pub const Opcode = enum(u16) {
             .OpBitwiseAnd => .{},
             .OpNot => .{},
             .OpBitFieldInsert => .{
-                .capabilities = &.{ Capability.Shader, Capability.BitInstructions },
+                .capabilities = &.{Capability.Shader},
             },
             .OpBitFieldSExtract => .{
-                .capabilities = &.{ Capability.Shader, Capability.BitInstructions },
+                .capabilities = &.{Capability.Shader},
             },
             .OpBitFieldUExtract => .{
-                .capabilities = &.{ Capability.Shader, Capability.BitInstructions },
+                .capabilities = &.{Capability.Shader},
             },
             .OpBitReverse => .{
-                .capabilities = &.{ Capability.Shader, Capability.BitInstructions },
+                .capabilities = &.{Capability.Shader},
             },
             .OpBitCount => .{},
             .OpDPdx => .{
@@ -1491,24 +1428,6 @@ pub const Opcode = enum(u16) {
                 .capabilities = &.{Capability.RayTracingKHR},
                 .extensions = &.{"SPV_KHR_ray_tracing"},
             },
-            .OpSDotKHR => .{
-                .capabilities = &.{Capability.DotProductKHR},
-            },
-            .OpUDotKHR => .{
-                .capabilities = &.{Capability.DotProductKHR},
-            },
-            .OpSUDotKHR => .{
-                .capabilities = &.{Capability.DotProductKHR},
-            },
-            .OpSDotAccSatKHR => .{
-                .capabilities = &.{Capability.DotProductKHR},
-            },
-            .OpUDotAccSatKHR => .{
-                .capabilities = &.{Capability.DotProductKHR},
-            },
-            .OpSUDotAccSatKHR => .{
-                .capabilities = &.{Capability.DotProductKHR},
-            },
             .OpTypeRayQueryKHR => .{
                 .capabilities = &.{Capability.RayQueryKHR},
                 .extensions = &.{"SPV_KHR_ray_query"},
@@ -1609,14 +1528,6 @@ pub const Opcode = enum(u16) {
                 .capabilities = &.{Capability.RayTracingNV},
                 .extensions = &.{"SPV_NV_ray_tracing"},
             },
-            .OpTraceMotionNV => .{
-                .capabilities = &.{Capability.RayTracingMotionBlurNV},
-                .extensions = &.{"SPV_NV_ray_tracing_motion_blur"},
-            },
-            .OpTraceRayMotionNV => .{
-                .capabilities = &.{Capability.RayTracingMotionBlurNV},
-                .extensions = &.{"SPV_NV_ray_tracing_motion_blur"},
-            },
             .OpTypeAccelerationStructureKHR => .{
                 .capabilities = &.{ Capability.RayTracingNV, Capability.RayTracingKHR, Capability.RayQueryKHR },
                 .extensions = &.{ "SPV_NV_ray_tracing", "SPV_KHR_ray_tracing", "SPV_KHR_ray_query" },
@@ -1660,27 +1571,6 @@ pub const Opcode = enum(u16) {
             .OpIsHelperInvocationEXT => .{
                 .capabilities = &.{Capability.DemoteToHelperInvocationEXT},
                 .extensions = &.{"SPV_EXT_demote_to_helper_invocation"},
-            },
-            .OpConvertUToImageNV => .{
-                .capabilities = &.{Capability.BindlessTextureNV},
-            },
-            .OpConvertUToSamplerNV => .{
-                .capabilities = &.{Capability.BindlessTextureNV},
-            },
-            .OpConvertImageToUNV => .{
-                .capabilities = &.{Capability.BindlessTextureNV},
-            },
-            .OpConvertSamplerToUNV => .{
-                .capabilities = &.{Capability.BindlessTextureNV},
-            },
-            .OpConvertUToSampledImageNV => .{
-                .capabilities = &.{Capability.BindlessTextureNV},
-            },
-            .OpConvertSampledImageToUNV => .{
-                .capabilities = &.{Capability.BindlessTextureNV},
-            },
-            .OpSamplerImageAddressingModeNV => .{
-                .capabilities = &.{Capability.BindlessTextureNV},
             },
             .OpSubgroupShuffleINTEL => .{
                 .capabilities = &.{Capability.SubgroupShuffleINTEL},
@@ -2156,165 +2046,9 @@ pub const Opcode = enum(u16) {
             .OpRestoreMemoryINTEL => .{
                 .capabilities = &.{Capability.VariableLengthArrayINTEL},
             },
-            .OpArbitraryFloatSinCosPiINTEL => .{
-                .capabilities = &.{Capability.ArbitraryPrecisionFloatingPointINTEL},
-            },
-            .OpArbitraryFloatCastINTEL => .{
-                .capabilities = &.{Capability.ArbitraryPrecisionFloatingPointINTEL},
-            },
-            .OpArbitraryFloatCastFromIntINTEL => .{
-                .capabilities = &.{Capability.ArbitraryPrecisionFloatingPointINTEL},
-            },
-            .OpArbitraryFloatCastToIntINTEL => .{
-                .capabilities = &.{Capability.ArbitraryPrecisionFloatingPointINTEL},
-            },
-            .OpArbitraryFloatAddINTEL => .{
-                .capabilities = &.{Capability.ArbitraryPrecisionFloatingPointINTEL},
-            },
-            .OpArbitraryFloatSubINTEL => .{
-                .capabilities = &.{Capability.ArbitraryPrecisionFloatingPointINTEL},
-            },
-            .OpArbitraryFloatMulINTEL => .{
-                .capabilities = &.{Capability.ArbitraryPrecisionFloatingPointINTEL},
-            },
-            .OpArbitraryFloatDivINTEL => .{
-                .capabilities = &.{Capability.ArbitraryPrecisionFloatingPointINTEL},
-            },
-            .OpArbitraryFloatGTINTEL => .{
-                .capabilities = &.{Capability.ArbitraryPrecisionFloatingPointINTEL},
-            },
-            .OpArbitraryFloatGEINTEL => .{
-                .capabilities = &.{Capability.ArbitraryPrecisionFloatingPointINTEL},
-            },
-            .OpArbitraryFloatLTINTEL => .{
-                .capabilities = &.{Capability.ArbitraryPrecisionFloatingPointINTEL},
-            },
-            .OpArbitraryFloatLEINTEL => .{
-                .capabilities = &.{Capability.ArbitraryPrecisionFloatingPointINTEL},
-            },
-            .OpArbitraryFloatEQINTEL => .{
-                .capabilities = &.{Capability.ArbitraryPrecisionFloatingPointINTEL},
-            },
-            .OpArbitraryFloatRecipINTEL => .{
-                .capabilities = &.{Capability.ArbitraryPrecisionFloatingPointINTEL},
-            },
-            .OpArbitraryFloatRSqrtINTEL => .{
-                .capabilities = &.{Capability.ArbitraryPrecisionFloatingPointINTEL},
-            },
-            .OpArbitraryFloatCbrtINTEL => .{
-                .capabilities = &.{Capability.ArbitraryPrecisionFloatingPointINTEL},
-            },
-            .OpArbitraryFloatHypotINTEL => .{
-                .capabilities = &.{Capability.ArbitraryPrecisionFloatingPointINTEL},
-            },
-            .OpArbitraryFloatSqrtINTEL => .{
-                .capabilities = &.{Capability.ArbitraryPrecisionFloatingPointINTEL},
-            },
-            .OpArbitraryFloatLogINTEL => .{
-                .capabilities = &.{Capability.ArbitraryPrecisionFloatingPointINTEL},
-            },
-            .OpArbitraryFloatLog2INTEL => .{
-                .capabilities = &.{Capability.ArbitraryPrecisionFloatingPointINTEL},
-            },
-            .OpArbitraryFloatLog10INTEL => .{
-                .capabilities = &.{Capability.ArbitraryPrecisionFloatingPointINTEL},
-            },
-            .OpArbitraryFloatLog1pINTEL => .{
-                .capabilities = &.{Capability.ArbitraryPrecisionFloatingPointINTEL},
-            },
-            .OpArbitraryFloatExpINTEL => .{
-                .capabilities = &.{Capability.ArbitraryPrecisionFloatingPointINTEL},
-            },
-            .OpArbitraryFloatExp2INTEL => .{
-                .capabilities = &.{Capability.ArbitraryPrecisionFloatingPointINTEL},
-            },
-            .OpArbitraryFloatExp10INTEL => .{
-                .capabilities = &.{Capability.ArbitraryPrecisionFloatingPointINTEL},
-            },
-            .OpArbitraryFloatExpm1INTEL => .{
-                .capabilities = &.{Capability.ArbitraryPrecisionFloatingPointINTEL},
-            },
-            .OpArbitraryFloatSinINTEL => .{
-                .capabilities = &.{Capability.ArbitraryPrecisionFloatingPointINTEL},
-            },
-            .OpArbitraryFloatCosINTEL => .{
-                .capabilities = &.{Capability.ArbitraryPrecisionFloatingPointINTEL},
-            },
-            .OpArbitraryFloatSinCosINTEL => .{
-                .capabilities = &.{Capability.ArbitraryPrecisionFloatingPointINTEL},
-            },
-            .OpArbitraryFloatSinPiINTEL => .{
-                .capabilities = &.{Capability.ArbitraryPrecisionFloatingPointINTEL},
-            },
-            .OpArbitraryFloatCosPiINTEL => .{
-                .capabilities = &.{Capability.ArbitraryPrecisionFloatingPointINTEL},
-            },
-            .OpArbitraryFloatASinINTEL => .{
-                .capabilities = &.{Capability.ArbitraryPrecisionFloatingPointINTEL},
-            },
-            .OpArbitraryFloatASinPiINTEL => .{
-                .capabilities = &.{Capability.ArbitraryPrecisionFloatingPointINTEL},
-            },
-            .OpArbitraryFloatACosINTEL => .{
-                .capabilities = &.{Capability.ArbitraryPrecisionFloatingPointINTEL},
-            },
-            .OpArbitraryFloatACosPiINTEL => .{
-                .capabilities = &.{Capability.ArbitraryPrecisionFloatingPointINTEL},
-            },
-            .OpArbitraryFloatATanINTEL => .{
-                .capabilities = &.{Capability.ArbitraryPrecisionFloatingPointINTEL},
-            },
-            .OpArbitraryFloatATanPiINTEL => .{
-                .capabilities = &.{Capability.ArbitraryPrecisionFloatingPointINTEL},
-            },
-            .OpArbitraryFloatATan2INTEL => .{
-                .capabilities = &.{Capability.ArbitraryPrecisionFloatingPointINTEL},
-            },
-            .OpArbitraryFloatPowINTEL => .{
-                .capabilities = &.{Capability.ArbitraryPrecisionFloatingPointINTEL},
-            },
-            .OpArbitraryFloatPowRINTEL => .{
-                .capabilities = &.{Capability.ArbitraryPrecisionFloatingPointINTEL},
-            },
-            .OpArbitraryFloatPowNINTEL => .{
-                .capabilities = &.{Capability.ArbitraryPrecisionFloatingPointINTEL},
-            },
             .OpLoopControlINTEL => .{
                 .capabilities = &.{Capability.UnstructuredLoopControlsINTEL},
                 .extensions = &.{"SPV_INTEL_unstructured_loop_controls"},
-            },
-            .OpFixedSqrtINTEL => .{
-                .capabilities = &.{Capability.ArbitraryPrecisionFixedPointINTEL},
-            },
-            .OpFixedRecipINTEL => .{
-                .capabilities = &.{Capability.ArbitraryPrecisionFixedPointINTEL},
-            },
-            .OpFixedRsqrtINTEL => .{
-                .capabilities = &.{Capability.ArbitraryPrecisionFixedPointINTEL},
-            },
-            .OpFixedSinINTEL => .{
-                .capabilities = &.{Capability.ArbitraryPrecisionFixedPointINTEL},
-            },
-            .OpFixedCosINTEL => .{
-                .capabilities = &.{Capability.ArbitraryPrecisionFixedPointINTEL},
-            },
-            .OpFixedSinCosINTEL => .{
-                .capabilities = &.{Capability.ArbitraryPrecisionFixedPointINTEL},
-            },
-            .OpFixedSinPiINTEL => .{
-                .capabilities = &.{Capability.ArbitraryPrecisionFixedPointINTEL},
-            },
-            .OpFixedCosPiINTEL => .{
-                .capabilities = &.{Capability.ArbitraryPrecisionFixedPointINTEL},
-            },
-            .OpFixedSinCosPiINTEL => .{
-                .capabilities = &.{Capability.ArbitraryPrecisionFixedPointINTEL},
-            },
-            .OpFixedLogINTEL => .{
-                .capabilities = &.{Capability.ArbitraryPrecisionFixedPointINTEL},
-            },
-            .OpFixedExpINTEL => .{
-                .capabilities = &.{Capability.ArbitraryPrecisionFixedPointINTEL},
             },
             .OpPtrCastToCrossWorkgroupINTEL => .{
                 .capabilities = &.{Capability.USMStorageClassesINTEL},
@@ -2403,7 +2137,7 @@ pub const Opcode = enum(u16) {
                 .extensions = &.{"SPV_KHR_ray_query"},
             },
             .OpAtomicFAddEXT => .{
-                .capabilities = &.{ Capability.AtomicFloat16AddEXT, Capability.AtomicFloat32AddEXT, Capability.AtomicFloat64AddEXT },
+                .capabilities = &.{ Capability.AtomicFloat32AddEXT, Capability.AtomicFloat64AddEXT },
                 .extensions = &.{"SPV_EXT_shader_atomic_float_add"},
             },
             .OpTypeBufferSurfaceINTEL => .{
@@ -2778,12 +2512,6 @@ pub const Instruction = union(Opcode) {
     OpConvertUToAccelerationStructureKHR: *const struct { id_result_type: IdResultType, id_result: IdResult, accel: IdRef },
     OpIgnoreIntersectionKHR,
     OpTerminateRayKHR,
-    OpSDotKHR: *const struct { id_result_type: IdResultType, id_result: IdResult, vector_1: IdRef, vector_2: IdRef, packed_vector_format: ?PackedVectorFormat = null },
-    OpUDotKHR: *const struct { id_result_type: IdResultType, id_result: IdResult, vector_1: IdRef, vector_2: IdRef, packed_vector_format: ?PackedVectorFormat = null },
-    OpSUDotKHR: *const struct { id_result_type: IdResultType, id_result: IdResult, vector_1: IdRef, vector_2: IdRef, packed_vector_format: ?PackedVectorFormat = null },
-    OpSDotAccSatKHR: *const struct { id_result_type: IdResultType, id_result: IdResult, vector_1: IdRef, vector_2: IdRef, accumulator: IdRef, packed_vector_format: ?PackedVectorFormat = null },
-    OpUDotAccSatKHR: *const struct { id_result_type: IdResultType, id_result: IdResult, vector_1: IdRef, vector_2: IdRef, accumulator: IdRef, packed_vector_format: ?PackedVectorFormat = null },
-    OpSUDotAccSatKHR: *const struct { id_result_type: IdResultType, id_result: IdResult, vector_1: IdRef, vector_2: IdRef, accumulator: IdRef, packed_vector_format: ?PackedVectorFormat = null },
     OpTypeRayQueryKHR: *const struct { id_result: IdResult },
     OpRayQueryInitializeKHR: *const struct { rayquery: IdRef, accel: IdRef, rayflags: IdRef, cullmask: IdRef, rayorigin: IdRef, raytmin: IdRef, raydirection: IdRef, raytmax: IdRef },
     OpRayQueryTerminateKHR: *const struct { rayquery: IdRef },
@@ -2809,8 +2537,6 @@ pub const Instruction = union(Opcode) {
     OpIgnoreIntersectionNV,
     OpTerminateRayNV,
     OpTraceNV: *const struct { accel: IdRef, ray_flags: IdRef, cull_mask: IdRef, sbt_offset: IdRef, sbt_stride: IdRef, miss_index: IdRef, ray_origin: IdRef, ray_tmin: IdRef, ray_direction: IdRef, ray_tmax: IdRef, payloadid: IdRef },
-    OpTraceMotionNV: *const struct { accel: IdRef, ray_flags: IdRef, cull_mask: IdRef, sbt_offset: IdRef, sbt_stride: IdRef, miss_index: IdRef, ray_origin: IdRef, ray_tmin: IdRef, ray_direction: IdRef, ray_tmax: IdRef, time: IdRef, payloadid: IdRef },
-    OpTraceRayMotionNV: *const struct { accel: IdRef, ray_flags: IdRef, cull_mask: IdRef, sbt_offset: IdRef, sbt_stride: IdRef, miss_index: IdRef, ray_origin: IdRef, ray_tmin: IdRef, ray_direction: IdRef, ray_tmax: IdRef, time: IdRef, payload: IdRef },
     OpTypeAccelerationStructureKHR: *const struct { id_result: IdResult },
     OpExecuteCallableNV: *const struct { sbt_index: IdRef, callable_dataid: IdRef },
     OpTypeCooperativeMatrixNV: *const struct { id_result: IdResult, component_type: IdRef, execution: IdScope, rows: IdRef, columns: IdRef },
@@ -2822,13 +2548,6 @@ pub const Instruction = union(Opcode) {
     OpEndInvocationInterlockEXT,
     OpDemoteToHelperInvocationEXT,
     OpIsHelperInvocationEXT: *const struct { id_result_type: IdResultType, id_result: IdResult },
-    OpConvertUToImageNV: *const struct { id_result_type: IdResultType, id_result: IdResult, operand: IdRef },
-    OpConvertUToSamplerNV: *const struct { id_result_type: IdResultType, id_result: IdResult, operand: IdRef },
-    OpConvertImageToUNV: *const struct { id_result_type: IdResultType, id_result: IdResult, operand: IdRef },
-    OpConvertSamplerToUNV: *const struct { id_result_type: IdResultType, id_result: IdResult, operand: IdRef },
-    OpConvertUToSampledImageNV: *const struct { id_result_type: IdResultType, id_result: IdResult, operand: IdRef },
-    OpConvertSampledImageToUNV: *const struct { id_result_type: IdResultType, id_result: IdResult, operand: IdRef },
-    OpSamplerImageAddressingModeNV: *const struct { bit_width: LiteralInteger },
     OpSubgroupShuffleINTEL: *const struct { id_result_type: IdResultType, id_result: IdResult, data: IdRef, invocationid: IdRef },
     OpSubgroupShuffleDownINTEL: *const struct { id_result_type: IdResultType, id_result: IdResult, current: IdRef, next: IdRef, delta: IdRef },
     OpSubgroupShuffleUpINTEL: *const struct { id_result_type: IdResultType, id_result: IdResult, previous: IdRef, current: IdRef, delta: IdRef },
@@ -2985,59 +2704,7 @@ pub const Instruction = union(Opcode) {
     OpVariableLengthArrayINTEL: *const struct { id_result_type: IdResultType, id_result: IdResult, lenght: IdRef },
     OpSaveMemoryINTEL: *const struct { id_result_type: IdResultType, id_result: IdResult },
     OpRestoreMemoryINTEL: *const struct { ptr: IdRef },
-    OpArbitraryFloatSinCosPiINTEL: *const struct { id_result_type: IdResultType, id_result: IdResult, a: IdRef, m1: LiteralInteger, mout: LiteralInteger, fromsign: LiteralInteger, enablesubnormals: LiteralInteger, roundingmode: LiteralInteger, roundingaccuracy: LiteralInteger },
-    OpArbitraryFloatCastINTEL: *const struct { id_result_type: IdResultType, id_result: IdResult, a: IdRef, m1: LiteralInteger, mout: LiteralInteger, enablesubnormals: LiteralInteger, roundingmode: LiteralInteger, roundingaccuracy: LiteralInteger },
-    OpArbitraryFloatCastFromIntINTEL: *const struct { id_result_type: IdResultType, id_result: IdResult, a: IdRef, mout: LiteralInteger, fromsign: LiteralInteger, enablesubnormals: LiteralInteger, roundingmode: LiteralInteger, roundingaccuracy: LiteralInteger },
-    OpArbitraryFloatCastToIntINTEL: *const struct { id_result_type: IdResultType, id_result: IdResult, a: IdRef, m1: LiteralInteger, enablesubnormals: LiteralInteger, roundingmode: LiteralInteger, roundingaccuracy: LiteralInteger },
-    OpArbitraryFloatAddINTEL: *const struct { id_result_type: IdResultType, id_result: IdResult, a: IdRef, m1: LiteralInteger, b: IdRef, m2: LiteralInteger, mout: LiteralInteger, enablesubnormals: LiteralInteger, roundingmode: LiteralInteger, roundingaccuracy: LiteralInteger },
-    OpArbitraryFloatSubINTEL: *const struct { id_result_type: IdResultType, id_result: IdResult, a: IdRef, m1: LiteralInteger, b: IdRef, m2: LiteralInteger, mout: LiteralInteger, enablesubnormals: LiteralInteger, roundingmode: LiteralInteger, roundingaccuracy: LiteralInteger },
-    OpArbitraryFloatMulINTEL: *const struct { id_result_type: IdResultType, id_result: IdResult, a: IdRef, m1: LiteralInteger, b: IdRef, m2: LiteralInteger, mout: LiteralInteger, enablesubnormals: LiteralInteger, roundingmode: LiteralInteger, roundingaccuracy: LiteralInteger },
-    OpArbitraryFloatDivINTEL: *const struct { id_result_type: IdResultType, id_result: IdResult, a: IdRef, m1: LiteralInteger, b: IdRef, m2: LiteralInteger, mout: LiteralInteger, enablesubnormals: LiteralInteger, roundingmode: LiteralInteger, roundingaccuracy: LiteralInteger },
-    OpArbitraryFloatGTINTEL: *const struct { id_result_type: IdResultType, id_result: IdResult, a: IdRef, m1: LiteralInteger, b: IdRef, m2: LiteralInteger },
-    OpArbitraryFloatGEINTEL: *const struct { id_result_type: IdResultType, id_result: IdResult, a: IdRef, m1: LiteralInteger, b: IdRef, m2: LiteralInteger },
-    OpArbitraryFloatLTINTEL: *const struct { id_result_type: IdResultType, id_result: IdResult, a: IdRef, m1: LiteralInteger, b: IdRef, m2: LiteralInteger },
-    OpArbitraryFloatLEINTEL: *const struct { id_result_type: IdResultType, id_result: IdResult, a: IdRef, m1: LiteralInteger, b: IdRef, m2: LiteralInteger },
-    OpArbitraryFloatEQINTEL: *const struct { id_result_type: IdResultType, id_result: IdResult, a: IdRef, m1: LiteralInteger, b: IdRef, m2: LiteralInteger },
-    OpArbitraryFloatRecipINTEL: *const struct { id_result_type: IdResultType, id_result: IdResult, a: IdRef, m1: LiteralInteger, mout: LiteralInteger, enablesubnormals: LiteralInteger, roundingmode: LiteralInteger, roundingaccuracy: LiteralInteger },
-    OpArbitraryFloatRSqrtINTEL: *const struct { id_result_type: IdResultType, id_result: IdResult, a: IdRef, m1: LiteralInteger, mout: LiteralInteger, enablesubnormals: LiteralInteger, roundingmode: LiteralInteger, roundingaccuracy: LiteralInteger },
-    OpArbitraryFloatCbrtINTEL: *const struct { id_result_type: IdResultType, id_result: IdResult, a: IdRef, m1: LiteralInteger, mout: LiteralInteger, enablesubnormals: LiteralInteger, roundingmode: LiteralInteger, roundingaccuracy: LiteralInteger },
-    OpArbitraryFloatHypotINTEL: *const struct { id_result_type: IdResultType, id_result: IdResult, a: IdRef, m1: LiteralInteger, b: IdRef, m2: LiteralInteger, mout: LiteralInteger, enablesubnormals: LiteralInteger, roundingmode: LiteralInteger, roundingaccuracy: LiteralInteger },
-    OpArbitraryFloatSqrtINTEL: *const struct { id_result_type: IdResultType, id_result: IdResult, a: IdRef, m1: LiteralInteger, mout: LiteralInteger, enablesubnormals: LiteralInteger, roundingmode: LiteralInteger, roundingaccuracy: LiteralInteger },
-    OpArbitraryFloatLogINTEL: *const struct { id_result_type: IdResultType, id_result: IdResult, a: IdRef, m1: LiteralInteger, mout: LiteralInteger, enablesubnormals: LiteralInteger, roundingmode: LiteralInteger, roundingaccuracy: LiteralInteger },
-    OpArbitraryFloatLog2INTEL: *const struct { id_result_type: IdResultType, id_result: IdResult, a: IdRef, m1: LiteralInteger, mout: LiteralInteger, enablesubnormals: LiteralInteger, roundingmode: LiteralInteger, roundingaccuracy: LiteralInteger },
-    OpArbitraryFloatLog10INTEL: *const struct { id_result_type: IdResultType, id_result: IdResult, a: IdRef, m1: LiteralInteger, mout: LiteralInteger, enablesubnormals: LiteralInteger, roundingmode: LiteralInteger, roundingaccuracy: LiteralInteger },
-    OpArbitraryFloatLog1pINTEL: *const struct { id_result_type: IdResultType, id_result: IdResult, a: IdRef, m1: LiteralInteger, mout: LiteralInteger, enablesubnormals: LiteralInteger, roundingmode: LiteralInteger, roundingaccuracy: LiteralInteger },
-    OpArbitraryFloatExpINTEL: *const struct { id_result_type: IdResultType, id_result: IdResult, a: IdRef, m1: LiteralInteger, mout: LiteralInteger, enablesubnormals: LiteralInteger, roundingmode: LiteralInteger, roundingaccuracy: LiteralInteger },
-    OpArbitraryFloatExp2INTEL: *const struct { id_result_type: IdResultType, id_result: IdResult, a: IdRef, m1: LiteralInteger, mout: LiteralInteger, enablesubnormals: LiteralInteger, roundingmode: LiteralInteger, roundingaccuracy: LiteralInteger },
-    OpArbitraryFloatExp10INTEL: *const struct { id_result_type: IdResultType, id_result: IdResult, a: IdRef, m1: LiteralInteger, mout: LiteralInteger, enablesubnormals: LiteralInteger, roundingmode: LiteralInteger, roundingaccuracy: LiteralInteger },
-    OpArbitraryFloatExpm1INTEL: *const struct { id_result_type: IdResultType, id_result: IdResult, a: IdRef, m1: LiteralInteger, mout: LiteralInteger, enablesubnormals: LiteralInteger, roundingmode: LiteralInteger, roundingaccuracy: LiteralInteger },
-    OpArbitraryFloatSinINTEL: *const struct { id_result_type: IdResultType, id_result: IdResult, a: IdRef, m1: LiteralInteger, mout: LiteralInteger, enablesubnormals: LiteralInteger, roundingmode: LiteralInteger, roundingaccuracy: LiteralInteger },
-    OpArbitraryFloatCosINTEL: *const struct { id_result_type: IdResultType, id_result: IdResult, a: IdRef, m1: LiteralInteger, mout: LiteralInteger, enablesubnormals: LiteralInteger, roundingmode: LiteralInteger, roundingaccuracy: LiteralInteger },
-    OpArbitraryFloatSinCosINTEL: *const struct { id_result_type: IdResultType, id_result: IdResult, a: IdRef, m1: LiteralInteger, mout: LiteralInteger, enablesubnormals: LiteralInteger, roundingmode: LiteralInteger, roundingaccuracy: LiteralInteger },
-    OpArbitraryFloatSinPiINTEL: *const struct { id_result_type: IdResultType, id_result: IdResult, a: IdRef, m1: LiteralInteger, mout: LiteralInteger, enablesubnormals: LiteralInteger, roundingmode: LiteralInteger, roundingaccuracy: LiteralInteger },
-    OpArbitraryFloatCosPiINTEL: *const struct { id_result_type: IdResultType, id_result: IdResult, a: IdRef, m1: LiteralInteger, mout: LiteralInteger, enablesubnormals: LiteralInteger, roundingmode: LiteralInteger, roundingaccuracy: LiteralInteger },
-    OpArbitraryFloatASinINTEL: *const struct { id_result_type: IdResultType, id_result: IdResult, a: IdRef, m1: LiteralInteger, mout: LiteralInteger, enablesubnormals: LiteralInteger, roundingmode: LiteralInteger, roundingaccuracy: LiteralInteger },
-    OpArbitraryFloatASinPiINTEL: *const struct { id_result_type: IdResultType, id_result: IdResult, a: IdRef, m1: LiteralInteger, mout: LiteralInteger, enablesubnormals: LiteralInteger, roundingmode: LiteralInteger, roundingaccuracy: LiteralInteger },
-    OpArbitraryFloatACosINTEL: *const struct { id_result_type: IdResultType, id_result: IdResult, a: IdRef, m1: LiteralInteger, mout: LiteralInteger, enablesubnormals: LiteralInteger, roundingmode: LiteralInteger, roundingaccuracy: LiteralInteger },
-    OpArbitraryFloatACosPiINTEL: *const struct { id_result_type: IdResultType, id_result: IdResult, a: IdRef, m1: LiteralInteger, mout: LiteralInteger, enablesubnormals: LiteralInteger, roundingmode: LiteralInteger, roundingaccuracy: LiteralInteger },
-    OpArbitraryFloatATanINTEL: *const struct { id_result_type: IdResultType, id_result: IdResult, a: IdRef, m1: LiteralInteger, mout: LiteralInteger, enablesubnormals: LiteralInteger, roundingmode: LiteralInteger, roundingaccuracy: LiteralInteger },
-    OpArbitraryFloatATanPiINTEL: *const struct { id_result_type: IdResultType, id_result: IdResult, a: IdRef, m1: LiteralInteger, mout: LiteralInteger, enablesubnormals: LiteralInteger, roundingmode: LiteralInteger, roundingaccuracy: LiteralInteger },
-    OpArbitraryFloatATan2INTEL: *const struct { id_result_type: IdResultType, id_result: IdResult, a: IdRef, m1: LiteralInteger, b: IdRef, m2: LiteralInteger, mout: LiteralInteger, enablesubnormals: LiteralInteger, roundingmode: LiteralInteger, roundingaccuracy: LiteralInteger },
-    OpArbitraryFloatPowINTEL: *const struct { id_result_type: IdResultType, id_result: IdResult, a: IdRef, m1: LiteralInteger, b: IdRef, m2: LiteralInteger, mout: LiteralInteger, enablesubnormals: LiteralInteger, roundingmode: LiteralInteger, roundingaccuracy: LiteralInteger },
-    OpArbitraryFloatPowRINTEL: *const struct { id_result_type: IdResultType, id_result: IdResult, a: IdRef, m1: LiteralInteger, b: IdRef, m2: LiteralInteger, mout: LiteralInteger, enablesubnormals: LiteralInteger, roundingmode: LiteralInteger, roundingaccuracy: LiteralInteger },
-    OpArbitraryFloatPowNINTEL: *const struct { id_result_type: IdResultType, id_result: IdResult, a: IdRef, m1: LiteralInteger, b: IdRef, mout: LiteralInteger, enablesubnormals: LiteralInteger, roundingmode: LiteralInteger, roundingaccuracy: LiteralInteger },
     OpLoopControlINTEL: *const struct { loop_control_parameters: []const LiteralInteger = &.{} },
-    OpFixedSqrtINTEL: *const struct { id_result_type: IdResultType, id_result: IdResult, input_type: IdRef, input: IdRef, s: LiteralInteger, i: LiteralInteger, ri: LiteralInteger, q: LiteralInteger, o: LiteralInteger },
-    OpFixedRecipINTEL: *const struct { id_result_type: IdResultType, id_result: IdResult, input_type: IdRef, input: IdRef, s: LiteralInteger, i: LiteralInteger, ri: LiteralInteger, q: LiteralInteger, o: LiteralInteger },
-    OpFixedRsqrtINTEL: *const struct { id_result_type: IdResultType, id_result: IdResult, input_type: IdRef, input: IdRef, s: LiteralInteger, i: LiteralInteger, ri: LiteralInteger, q: LiteralInteger, o: LiteralInteger },
-    OpFixedSinINTEL: *const struct { id_result_type: IdResultType, id_result: IdResult, input_type: IdRef, input: IdRef, s: LiteralInteger, i: LiteralInteger, ri: LiteralInteger, q: LiteralInteger, o: LiteralInteger },
-    OpFixedCosINTEL: *const struct { id_result_type: IdResultType, id_result: IdResult, input_type: IdRef, input: IdRef, s: LiteralInteger, i: LiteralInteger, ri: LiteralInteger, q: LiteralInteger, o: LiteralInteger },
-    OpFixedSinCosINTEL: *const struct { id_result_type: IdResultType, id_result: IdResult, input_type: IdRef, input: IdRef, s: LiteralInteger, i: LiteralInteger, ri: LiteralInteger, q: LiteralInteger, o: LiteralInteger },
-    OpFixedSinPiINTEL: *const struct { id_result_type: IdResultType, id_result: IdResult, input_type: IdRef, input: IdRef, s: LiteralInteger, i: LiteralInteger, ri: LiteralInteger, q: LiteralInteger, o: LiteralInteger },
-    OpFixedCosPiINTEL: *const struct { id_result_type: IdResultType, id_result: IdResult, input_type: IdRef, input: IdRef, s: LiteralInteger, i: LiteralInteger, ri: LiteralInteger, q: LiteralInteger, o: LiteralInteger },
-    OpFixedSinCosPiINTEL: *const struct { id_result_type: IdResultType, id_result: IdResult, input_type: IdRef, input: IdRef, s: LiteralInteger, i: LiteralInteger, ri: LiteralInteger, q: LiteralInteger, o: LiteralInteger },
-    OpFixedLogINTEL: *const struct { id_result_type: IdResultType, id_result: IdResult, input_type: IdRef, input: IdRef, s: LiteralInteger, i: LiteralInteger, ri: LiteralInteger, q: LiteralInteger, o: LiteralInteger },
-    OpFixedExpINTEL: *const struct { id_result_type: IdResultType, id_result: IdResult, input_type: IdRef, input: IdRef, s: LiteralInteger, i: LiteralInteger, ri: LiteralInteger, q: LiteralInteger, o: LiteralInteger },
     OpPtrCastToCrossWorkgroupINTEL: *const struct { id_result_type: IdResultType, id_result: IdResult, pointer: IdRef },
     OpCrossWorkgroupCastToPtrINTEL: *const struct { id_result_type: IdResultType, id_result: IdResult, pointer: IdRef },
     OpReadPipeBlockingINTEL: *const struct { id_result_type: IdResultType, id_result: IdResult, packet_size: IdRef, packet_alignment: IdRef },
@@ -3061,7 +2728,7 @@ pub const Instruction = union(Opcode) {
     OpRayQueryGetIntersectionObjectToWorldKHR: *const struct { id_result_type: IdResultType, id_result: IdResult, rayquery: IdRef, intersection: IdRef },
     OpRayQueryGetIntersectionWorldToObjectKHR: *const struct { id_result_type: IdResultType, id_result: IdResult, rayquery: IdRef, intersection: IdRef },
     OpAtomicFAddEXT: *const struct { id_result_type: IdResultType, id_result: IdResult, pointer: IdRef, memory: IdScope, semantics: IdMemorySemantics, value: IdRef },
-    OpTypeBufferSurfaceINTEL: *const struct { id_result: IdResult, accessqualifier: AccessQualifier },
+    OpTypeBufferSurfaceINTEL: *const struct { id_result: IdResult },
     OpTypeStructContinuedINTEL: *const struct { id_ref: []const IdRef = &.{} },
     OpConstantCompositeContinuedINTEL: *const struct { constituents: []const IdRef = &.{} },
     OpSpecConstantCompositeContinuedINTEL: *const struct { constituents: []const IdRef = &.{} },
@@ -3083,7 +2750,7 @@ pub const ImageOperands = packed struct {
     ZeroExtend: bool = false,
     _reserved_bit_14: bool = false,
     _reserved_bit_15: bool = false,
-    Offsets: bool = false,
+    _reserved_bit_16: bool = false,
     _reserved_bit_17: bool = false,
     _reserved_bit_18: bool = false,
     _reserved_bit_19: bool = false,
@@ -3122,7 +2789,7 @@ pub const ImageOperands = packed struct {
         ZeroExtend: bool = false,
         _reserved_bit_14: bool = false,
         _reserved_bit_15: bool = false,
-        Offsets: ?struct { id_ref: IdRef } = null,
+        _reserved_bit_16: bool = false,
         _reserved_bit_17: bool = false,
         _reserved_bit_18: bool = false,
         _reserved_bit_19: bool = false,
@@ -3294,7 +2961,7 @@ pub const FunctionControl = packed struct {
     _reserved_bit_13: bool = false,
     _reserved_bit_14: bool = false,
     _reserved_bit_15: bool = false,
-    OptNoneINTEL: bool = false,
+    _reserved_bit_16: bool = false,
     _reserved_bit_17: bool = false,
     _reserved_bit_18: bool = false,
     _reserved_bit_19: bool = false,
@@ -3531,7 +3198,6 @@ pub const SourceLanguage = enum(u32) {
     OpenCL_C = 3,
     OpenCL_CPP = 4,
     HLSL = 5,
-    CPP_for_OpenCL = 6,
 };
 pub const ExecutionModel = enum(u32) {
     Vertex = 0,
@@ -3612,7 +3278,6 @@ pub const ExecutionMode = enum(u32) {
     SubgroupsPerWorkgroupId = 37,
     LocalSizeId = 38,
     LocalSizeHintId = 39,
-    SubgroupUniformControlFlowKHR = 4421,
     PostDepthCoverage = 4446,
     DenormPreserve = 4459,
     DenormFlushToZero = 4460,
@@ -3680,8 +3345,7 @@ pub const ExecutionMode = enum(u32) {
         SubgroupsPerWorkgroup: struct { subgroups_per_workgroup: LiteralInteger },
         SubgroupsPerWorkgroupId: struct { subgroups_per_workgroup: IdRef },
         LocalSizeId: struct { x_size: IdRef, y_size: IdRef, z_size: IdRef },
-        LocalSizeHintId: struct { x_size_hint: IdRef, y_size_hint: IdRef, z_size_hint: IdRef },
-        SubgroupUniformControlFlowKHR,
+        LocalSizeHintId: struct { local_size_hint: IdRef },
         PostDepthCoverage,
         DenormPreserve: struct { target_width: LiteralInteger },
         DenormFlushToZero: struct { target_width: LiteralInteger },
@@ -3860,25 +3524,9 @@ pub const FPDenormMode = enum(u32) {
     Preserve = 0,
     FlushToZero = 1,
 };
-pub const QuantizationModes = enum(u32) {
-    TRN = 0,
-    TRN_ZERO = 1,
-    RND = 2,
-    RND_ZERO = 3,
-    RND_INF = 4,
-    RND_MIN_INF = 5,
-    RND_CONV = 6,
-    RND_CONV_ODD = 7,
-};
 pub const FPOperationMode = enum(u32) {
     IEEE = 0,
     ALT = 1,
-};
-pub const OverflowModes = enum(u32) {
-    WRAP = 0,
-    SAT = 1,
-    SAT_ZERO = 2,
-    SAT_SYM = 3,
 };
 pub const LinkageType = enum(u32) {
     Export = 0,
@@ -3962,10 +3610,6 @@ pub const Decoration = enum(u32) {
     NonUniform = 5300,
     RestrictPointer = 5355,
     AliasedPointer = 5356,
-    BindlessSamplerNV = 5398,
-    BindlessImageNV = 5399,
-    BoundSamplerNV = 5400,
-    BoundImageNV = 5401,
     SIMTCallINTEL = 5599,
     ReferencedIndirectlyINTEL = 5602,
     ClobberINTEL = 5607,
@@ -4072,10 +3716,6 @@ pub const Decoration = enum(u32) {
         NonUniform,
         RestrictPointer,
         AliasedPointer,
-        BindlessSamplerNV,
-        BindlessImageNV,
-        BoundSamplerNV,
-        BoundImageNV,
         SIMTCallINTEL: struct { n: LiteralInteger },
         ReferencedIndirectlyINTEL,
         ClobberINTEL: struct { register: LiteralString },
@@ -4208,7 +3848,6 @@ pub const BuiltIn = enum(u32) {
     WorldToObjectKHR = 5331,
     HitTNV = 5332,
     HitKindKHR = 5333,
-    CurrentRayTimeNV = 5334,
     IncomingRayFlagsKHR = 5351,
     RayGeometryIndexKHR = 5352,
     WarpsPerSMNV = 5374,
@@ -4394,7 +4033,6 @@ pub const Capability = enum(u32) {
     UniformTexelBufferArrayNonUniformIndexing = 5311,
     StorageTexelBufferArrayNonUniformIndexing = 5312,
     RayTracingNV = 5340,
-    RayTracingMotionBlurNV = 5341,
     VulkanMemoryModel = 5345,
     VulkanMemoryModelDeviceScope = 5346,
     PhysicalStorageBufferAddresses = 5347,
@@ -4406,7 +4044,6 @@ pub const Capability = enum(u32) {
     ShaderSMBuiltinsNV = 5373,
     FragmentShaderPixelInterlockEXT = 5378,
     DemoteToHelperInvocationEXT = 5379,
-    BindlessTextureNV = 5390,
     SubgroupShuffleINTEL = 5568,
     SubgroupBufferBlockIOINTEL = 5569,
     SubgroupImageBlockIOINTEL = 5570,
@@ -4431,7 +4068,6 @@ pub const Capability = enum(u32) {
     FPGAMemoryAttributesINTEL = 5824,
     FPFastMathModeINTEL = 5837,
     ArbitraryPrecisionIntegersINTEL = 5844,
-    ArbitraryPrecisionFloatingPointINTEL = 5845,
     UnstructuredLoopControlsINTEL = 5886,
     FPGALoopControlsINTEL = 5888,
     KernelAttributesINTEL = 5892,
@@ -4440,22 +4076,13 @@ pub const Capability = enum(u32) {
     FPGAClusterAttributesINTEL = 5904,
     LoopFuseINTEL = 5906,
     FPGABufferLocationINTEL = 5920,
-    ArbitraryPrecisionFixedPointINTEL = 5922,
     USMStorageClassesINTEL = 5935,
     IOPipesINTEL = 5943,
     BlockingPipesINTEL = 5945,
     FPGARegINTEL = 5948,
-    DotProductInputAllKHR = 6016,
-    DotProductInput4x8BitKHR = 6017,
-    DotProductInput4x8BitPackedKHR = 6018,
-    DotProductKHR = 6019,
-    BitInstructions = 6025,
     AtomicFloat32AddEXT = 6033,
     AtomicFloat64AddEXT = 6034,
     LongConstantCompositeINTEL = 6089,
-    OptNoneINTEL = 6094,
-    AtomicFloat16AddEXT = 6095,
-    DebugInfoModuleINTEL = 6114,
 
     pub const StorageUniformBufferBlock16 = Capability.StorageBuffer16BitAccess;
     pub const StorageUniform16 = Capability.UniformAndStorageBuffer16BitAccess;
@@ -4489,7 +4116,4 @@ pub const RayQueryCommittedIntersectionType = enum(u32) {
 pub const RayQueryCandidateIntersectionType = enum(u32) {
     RayQueryCandidateIntersectionTriangleKHR = 0,
     RayQueryCandidateIntersectionAABBKHR = 1,
-};
-pub const PackedVectorFormat = enum(u32) {
-    PackedVectorFormat4x8BitKHR = 0,
 };

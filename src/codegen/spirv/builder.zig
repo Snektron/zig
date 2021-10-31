@@ -4,13 +4,9 @@ const testing = std.testing;
 
 const spec = @import("spec.zig");
 
-pub const Word = u32;
+pub const Word = spec.Word;
 pub const DoubleWord = std.meta.Int(.unsigned, @bitSizeOf(Word) * 2);
 pub const Log2Word = std.math.Log2Int(Word);
-
-pub const IdResultType = spec.IdResultType;
-pub const IdResult = spec.IdResult;
-pub const IdRef = spec.IdRef;
 
 pub const Opcode = spec.Opcode;
 pub const Instruction = spec.Instruction;
@@ -30,13 +26,9 @@ pub const Builder = struct {
         };
     }
 
-    pub fn allocId(self: Builder) IdResult {
+    pub fn allocId(self: *Builder) spec.IdResult {
         defer self.next_result_id += 1;
-        return self.next_result_id;
-    }
-
-    pub fn allocTypeId(self: Builder) IdResultType {
-        return .{.id = self.allocResultId().id};
+        return .{.id = self.next_result_id};
     }
 
     pub fn idBound(self: Builder) Word {
@@ -56,6 +48,12 @@ pub const Section = struct {
         section.* = undefined;
     }
 
+    /// Clear the instructions in this section.
+    pub fn reset(section: *Section) void {
+        section.instructions.items.len = 0;
+    }
+
+    /// Write an instruction to this section.
     pub fn emit(
         section: *Section,
         builder: Builder,
@@ -67,7 +65,28 @@ pub const Section = struct {
         section.writeInstruction(instruction);
     }
 
-    fn writeInstruction(section: *Section, instruction: Instruction) void {
+    /// Write an instruction and size, operands are to be inserted manually.
+    pub fn emitRaw(
+        section: *Section,
+        builder: Builder,
+        opcode: Opcode,
+        operands: usize, // opcode itself not included
+    ) !void {
+        const word_count = 1 + operands;
+        try section.instructions.ensureUnusedCapacity(builder.gpa, word_count);
+        section.instructions.appendAssumeCapacity((@intCast(Word, word_count << 16)) | @enumToInt(opcode));
+    }
+
+    /// Append the instructions from another section into this section.
+    pub fn append(
+        section: *Section,
+        builder: Builder,
+        other_section: Section
+    ) !void {
+        try section.instructions.appendSlice(builder.gpa, other_section.instructions.items);
+    }
+
+    pub fn writeInstruction(section: *Section, instruction: Instruction) void {
         const opcode = std.meta.activeTag(instruction);
         @setEvalBranchQuota(2000);
         inline for (@typeInfo(Instruction).Union.fields) |field| {
@@ -79,7 +98,8 @@ pub const Section = struct {
         unreachable;
     }
 
-    fn writeOperands(section: *Section, comptime Operands: type, operands: Operands) void {
+    /// Write a sequence of operands to the instructions array. Note: Assumes sufficient capacity!
+    pub fn writeOperands(section: *Section, comptime Operands: type, operands: Operands) void {
         const fields = switch (@typeInfo(Operands)) {
             .Pointer => |info| @typeInfo(info.child).Struct.fields,
             .Struct => |info| info.fields,
@@ -92,9 +112,13 @@ pub const Section = struct {
         }
     }
 
-    fn writeOperand(section: *Section, comptime Operand: type, operand: Operand) void {
+    /// Write a single operand to the instructions array. Note: Assumes sufficient capacity!
+    pub fn writeOperand(section: *Section, comptime Operand: type, operand: Operand) void {
         switch (Operand) {
-            IdResultType, IdResult, IdRef => section.writeWord(operand.id),
+            spec.IdResultType,
+            spec.IdResult,
+            spec.IdRef
+            => section.writeWord(operand.id),
             spec.LiteralInteger => section.writeWord(operand),
             spec.LiteralString => section.writeString(operand),
             spec.LiteralContextDependentNumber => section.writeContextDependentNumber(operand),
@@ -121,7 +145,7 @@ pub const Section = struct {
                     if (info.layout == .Packed) {
                         section.writeWord(@bitCast(Word, operand));
                     } else {
-                        section.writeExtendedStruct(Operand, operand);
+                        section.writeExtendedMask(Operand, operand);
                     }
                 },
                 .Union => section.writeExtendedUnion(Operand, operand),
@@ -173,15 +197,12 @@ pub const Section = struct {
         }
     }
 
-    fn writeExtendedStruct(section: *Section, comptime Operand: type, operand: Operand) void {
-        const mask_index = section.instructions.items.len;
-        section.writeWord(0);
+    fn writeExtendedMask(section: *Section, comptime Operand: type, operand: Operand) void {
         var mask: Word = 0;
         inline for (@typeInfo(Operand).Struct.fields) |field, bit| {
             switch (@typeInfo(field.field_type)) {
-                .Optional => |info| if (@field(operand, field.name)) |child| {
+                .Optional => if (@field(operand, field.name) != null) {
                     mask |= 1 << @intCast(u5, bit);
-                    section.writeOperands(info.child, child);
                 },
                 .Bool => if (@field(operand, field.name)) {
                     mask |= 1 << @intCast(u5, bit);
@@ -190,7 +211,21 @@ pub const Section = struct {
             }
         }
 
-        section.instructions.items[mask_index] = mask;
+        if (mask == 0) {
+            return;
+        }
+
+        section.writeWord(0);
+
+        inline for (@typeInfo(Operand).Struct.fields) |field| {
+            switch (@typeInfo(field.field_type)) {
+                .Optional => |info| if (@field(operand, field.name)) |child| {
+                    section.writeOperands(info.child, child);
+                },
+                .Bool => {},
+                else => unreachable,
+            }
+        }
     }
 
     fn writeExtendedUnion(section: *Section, comptime Operand: type, operand: Operand) void {
@@ -237,9 +272,9 @@ fn operandsSize(comptime Operands: type, operands: Operands) usize {
 fn operandSize(comptime Operand: type, operand: Operand) usize {
     return switch (Operand) {
         void => 0,
-        IdResultType,
-        IdResult,
-        IdRef,
+        spec.IdResultType,
+        spec.IdResult,
+        spec.IdRef,
         spec.LiteralInteger,
         spec.LiteralExtInstInteger,
         => 1,
@@ -275,17 +310,24 @@ fn operandSize(comptime Operand: type, operand: Operand) usize {
 }
 
 fn extendedMaskSize(comptime Operand: type, operand: Operand) usize {
-    var total: usize = 1; // One for the mask itself.
+    var total: usize = 0;
+    var any_set = false;
     inline for (@typeInfo(Operand).Struct.fields) |field| {
         switch (@typeInfo(field.field_type)) {
             .Optional => |info| if (@field(operand, field.name)) |child| {
                 total += operandsSize(info.child, child);
+                any_set = true;
             },
-            .Bool => {},
+            .Bool => if (@field(operand, field.name)) {
+                any_set = true;
+            },
             else => unreachable,
         }
     }
-    return total;
+    if (!any_set) {
+        return 0;
+    }
+    return total + 1; // Add one for the mask itself.
 }
 
 fn extendedUnionSize(comptime Operand: type, operand: Operand) usize {

@@ -28,15 +28,16 @@ const assert = std.debug.assert;
 const log = std.log.scoped(.link);
 const ArenaAllocator = std.heap.ArenaAllocator;
 
+const spec = @import("../codegen/spirv/spec.zig");
+const Word = spec.Word;
+const IdResult = spec.IdResult;
+
 const Module = @import("../Module.zig");
 const Compilation = @import("../Compilation.zig");
 const link = @import("../link.zig");
 const codegen = @import("../codegen/spirv.zig");
-const Word = codegen.Word;
-const ResultId = codegen.ResultId;
 const trace = @import("../tracy.zig").trace;
 const build_options = @import("build_options");
-const spec = @import("../codegen/spirv/spec.zig");
 const Air = @import("../Air.zig");
 const Liveness = @import("../Liveness.zig");
 const Value = @import("../value.zig").Value;
@@ -45,7 +46,7 @@ const Value = @import("../value.zig").Value;
 pub const FnData = struct {
     // We're going to fill these in flushModule, and we're going to fill them unconditionally,
     // so just set it to undefined.
-    id: ResultId = undefined,
+    id: IdResult = undefined,
 };
 
 base: link.File,
@@ -212,7 +213,7 @@ pub fn flushModule(self: *SpirV, comp: *Compilation) !void {
         for (self.decl_table.keys()) |decl| {
             if (!decl.has_tv) continue;
 
-            decl.fn_link.spirv.id = spv.allocResultId();
+            decl.fn_link.spirv.id = spv.builder.allocId();
         }
     }
 
@@ -237,14 +238,14 @@ pub fn flushModule(self: *SpirV, comp: *Compilation) !void {
         }
     }
 
-    try writeCapabilities(&spv.binary.capabilities_and_extensions, target);
-    try writeMemoryModel(&spv.binary.capabilities_and_extensions, target);
+    try writeCapabilities(&spv, target);
+    try writeMemoryModel(&spv, target);
 
     const header = [_]Word{
         spec.magic_number,
         (spec.version.major << 16) | (spec.version.minor << 8),
         0, // TODO: Register Zig compiler magic number.
-        spv.resultIdBound(),
+        spv.builder.idBound(),
         0, // Schema (currently reserved for future use in the SPIR-V spec).
     };
 
@@ -252,10 +253,10 @@ pub fn flushModule(self: *SpirV, comp: *Compilation) !void {
     // follows the SPIR-V logical module format!
     const buffers = &[_][]const Word{
         &header,
-        spv.binary.capabilities_and_extensions.items,
-        spv.binary.debug_strings.items,
-        spv.binary.types_globals_constants.items,
-        spv.binary.fn_decls.items,
+        spv.sections.capabilities_and_extensions.instructions.items,
+        spv.sections.debug_strings.instructions.items,
+        spv.sections.types_globals_constants.instructions.items,
+        spv.sections.fn_decls.instructions.items,
     };
 
     var iovc_buffers: [buffers.len]std.os.iovec_const = undefined;
@@ -307,7 +308,7 @@ fn cloneAir(air: Air, gpa: *Allocator, value_arena: *Allocator) !Air {
     };
 }
 
-fn writeCapabilities(binary: *std.ArrayList(Word), target: std.Target) !void {
+fn writeCapabilities(spv: *codegen.SPIRVModule, target: std.Target) !void {
     // TODO: Integrate with a hypothetical feature system
     const cap: spec.Capability = switch (target.os.tag) {
         .opencl => .Kernel,
@@ -316,10 +317,12 @@ fn writeCapabilities(binary: *std.ArrayList(Word), target: std.Target) !void {
         else => unreachable, // TODO
     };
 
-    try codegen.writeInstruction(binary, .OpCapability, &[_]Word{@enumToInt(cap)});
+    try spv.sections.capabilities_and_extensions.emit(spv.builder, .{.OpCapability = &.{
+        .capability = cap,
+    }});
 }
 
-fn writeMemoryModel(binary: *std.ArrayList(Word), target: std.Target) !void {
+fn writeMemoryModel(spv: *codegen.SPIRVModule, target: std.Target) !void {
     const addressing_model = switch (target.os.tag) {
         .opencl => switch (target.cpu.arch) {
             .spirv32 => spec.AddressingModel.Physical32,
@@ -337,7 +340,8 @@ fn writeMemoryModel(binary: *std.ArrayList(Word), target: std.Target) !void {
         else => unreachable,
     };
 
-    try codegen.writeInstruction(binary, .OpMemoryModel, &[_]Word{
-        @enumToInt(addressing_model), @enumToInt(memory_model),
-    });
+    try spv.sections.capabilities_and_extensions.emit(spv.builder, .{.OpMemoryModel = &.{
+        .addressing_model = addressing_model,
+        .memory_model = memory_model,
+    }});
 }

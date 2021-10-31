@@ -76,24 +76,28 @@ fn render(writer: anytype, allocator: *Allocator, registry: g.Registry) !void {
         \\const Version = std.builtin.Version;
         \\const Tuple = std.meta.Tuple;
         \\
+        \\pub const Word = u32;
         \\pub const IdResultType = struct{
-        \\    id: u32,
+        \\    id: Word,
         \\    pub fn toRef(self: IdResultType) IdRef {
         \\        return .{.id = self.id};
         \\    }
         \\};
         \\pub const IdResult = struct{
-        \\    id: u32,
+        \\    id: Word,
         \\    pub fn toRef(self: IdResult) IdRef {
         \\        return .{.id = self.id};
         \\    }
+        \\    pub fn toResultType(self: IdResult) IdResultType {
+        \\        return .{.id = self.id};
+        \\    }
         \\};
-        \\pub const IdRef = struct{ id: u32 };
+        \\pub const IdRef = struct{ id: Word };
         \\
         \\pub const IdMemorySemantics = IdRef;
         \\pub const IdScope = IdRef;
         \\
-        \\pub const LiteralInteger = u32;
+        \\pub const LiteralInteger = Word;
         \\pub const LiteralString = []const u8;
         \\pub const LiteralContextDependentNumber = union(enum) {
         \\    int32: i32,
@@ -103,10 +107,10 @@ fn render(writer: anytype, allocator: *Allocator, registry: g.Registry) !void {
         \\    float32: f32,
         \\    float64: f64,
         \\};
-        \\pub const LiteralExtInstInteger = struct{ inst: u32 };
+        \\pub const LiteralExtInstInteger = struct{ inst: Word };
         \\pub const LiteralSpecConstantOpInteger = struct { opcode: Opcode };
-        \\pub const PairLiteralIntegerIdRef = struct { value: u32, label: IdRef };
-        \\pub const PairIdRefLiteralInteger = struct { target: IdRef, member: u32 };
+        \\pub const PairLiteralIntegerIdRef = struct { value: LiteralInteger, label: IdRef };
+        \\pub const PairIdRefLiteralInteger = struct { target: IdRef, member: LiteralInteger };
         \\pub const PairIdRefIdRef = [2]IdRef;
         \\
         \\pub const InstructionInfo = struct{
@@ -122,7 +126,7 @@ fn render(writer: anytype, allocator: *Allocator, registry: g.Registry) !void {
         .core => |core_reg| {
             try writer.print(
                 \\pub const version = Version{{ .major = {}, .minor = {}, .patch = {} }};
-                \\pub const magic_number: u32 = {s};
+                \\pub const magic_number: Word = {s};
                 \\
             ,
                 .{ core_reg.major_version, core_reg.minor_version, core_reg.revision, core_reg.magic_number },
