@@ -26,6 +26,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const assert = std.debug.assert;
 const log = std.log.scoped(.link);
+const ArenaAllocator = std.heap.ArenaAllocator;
 
 const Module = @import("../Module.zig");
 const Compilation = @import("../Compilation.zig");
@@ -38,6 +39,7 @@ const build_options = @import("build_options");
 const spec = @import("../codegen/spirv/spec.zig");
 const Air = @import("../Air.zig");
 const Liveness = @import("../Liveness.zig");
+const Value = @import("../value.zig").Value;
 
 // TODO: Should this struct be used at all rather than just a hashmap of aux data for every decl?
 pub const FnData = struct {
@@ -55,7 +57,15 @@ decl_table: std.AutoArrayHashMapUnmanaged(*Module.Decl, DeclGenContext) = .{},
 
 const DeclGenContext = struct {
     air: Air,
+    air_value_arena: ArenaAllocator.State,
     liveness: Liveness,
+
+    fn deinit(self: *DeclGenContext, gpa: *Allocator) void {
+        self.air.deinit(gpa);
+        self.liveness.deinit(gpa);
+        self.air_value_arena.promote(gpa).deinit();
+        self.* = undefined;
+    }
 };
 
 pub fn createEmpty(gpa: *Allocator, options: link.Options) !*SpirV {
@@ -105,6 +115,12 @@ pub fn openPath(allocator: *Allocator, sub_path: []const u8, options: link.Optio
 }
 
 pub fn deinit(self: *SpirV) void {
+    var it = self.decl_table.iterator();
+    while (it.next()) |entry| {
+        if (entry.key_ptr.*.val.castTag(.function)) |_| {
+            entry.value_ptr.deinit(self.base.allocator);
+        }
+    }
     self.decl_table.deinit(self.base.allocator);
 }
 
@@ -113,12 +129,27 @@ pub fn updateFunc(self: *SpirV, module: *Module, func: *Module.Fn, air: Air, liv
         @panic("Attempted to compile for architecture that was disabled by build configuration");
     }
     _ = module;
-    // Keep track of all decls so we can iterate over them on flush().
-    _ = try self.decl_table.getOrPut(self.base.allocator, func.owner_decl);
 
-    _ = air;
-    _ = liveness;
-    @panic("TODO SPIR-V needs to keep track of Air and Liveness so it can use them later");
+    // Keep track of all decls so we can iterate over them on flush().
+    const result = try self.decl_table.getOrPut(self.base.allocator, func.owner_decl);
+    if (result.found_existing) {
+        result.value_ptr.deinit(self.base.allocator);
+    }
+
+    var arena = ArenaAllocator.init(self.base.allocator);
+    errdefer arena.deinit();
+
+    var new_air = try cloneAir(air, self.base.allocator, &arena.allocator);
+    errdefer new_air.deinit(self.base.allocator);
+
+    var new_liveness = try cloneLiveness(liveness, self.base.allocator);
+    errdefer new_liveness.deinit(self.base.allocator);
+
+    result.value_ptr.* = .{
+        .air = new_air,
+        .air_value_arena = arena.state,
+        .liveness = new_liveness,
+    };
 }
 
 pub fn updateDecl(self: *SpirV, module: *Module, decl: *Module.Decl) !void {
@@ -143,7 +174,11 @@ pub fn updateDeclExports(
 }
 
 pub fn freeDecl(self: *SpirV, decl: *Module.Decl) void {
-    assert(self.decl_table.swapRemove(decl));
+    const index = self.decl_table.getIndex(decl).?;
+    if (decl.val.castTag(.function)) |_| {
+        self.decl_table.values()[index].deinit(self.base.allocator);
+    }
+    self.decl_table.swapRemoveAt(index);
 }
 
 pub fn flush(self: *SpirV, comp: *Compilation) !void {
@@ -194,6 +229,7 @@ pub fn flushModule(self: *SpirV, comp: *Compilation) !void {
             const air = entry.value_ptr.air;
             const liveness = entry.value_ptr.liveness;
 
+            // Note, if `decl` is not a function, air/liveness may be undefined.
             if (try decl_gen.gen(decl, air, liveness)) |msg| {
                 try module.failed_decls.put(module.gpa, decl, msg);
                 return; // TODO: Attempt to generate more decls?
@@ -237,6 +273,38 @@ pub fn flushModule(self: *SpirV, comp: *Compilation) !void {
     try file.seekTo(0);
     try file.setEndPos(file_size);
     try file.pwritevAll(&iovc_buffers, 0);
+}
+
+fn cloneLiveness(l: Liveness, gpa: *Allocator) !Liveness {
+    const tomb_bits = try gpa.dupe(usize, l.tomb_bits);
+    errdefer gpa.free(tomb_bits);
+
+    const extra = try gpa.dupe(u32, l.extra);
+    errdefer gpa.free(extra);
+
+    return Liveness{
+        .tomb_bits = tomb_bits,
+        .extra = extra,
+        .special = try l.special.clone(gpa),
+    };
+}
+
+fn cloneAir(air: Air, gpa: *Allocator, value_arena: *Allocator) !Air {
+    const values = try gpa.alloc(Value, air.values.len);
+    errdefer gpa.free(values);
+
+    for (values) |*value, i| {
+        value.* = try air.values[i].copy(value_arena);
+    }
+
+    var instructions = try air.instructions.toMultiArrayList().clone(gpa);
+    errdefer instructions.deinit(gpa);
+
+    return Air{
+        .instructions = instructions.slice(),
+        .extra = try gpa.dupe(u32, air.extra),
+        .values = values,
+    };
 }
 
 fn writeCapabilities(binary: *std.ArrayList(Word), target: std.Target) !void {

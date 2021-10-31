@@ -122,6 +122,12 @@ pub fn ArrayListAligned(comptime T: type, comptime alignment: ?u29) type {
             return result[0 .. result.len - 1 :sentinel];
         }
 
+        /// Create a copy of this array list with a new backing store,
+        /// using the specified allocator.
+        pub fn clone(self: Self, allocator: *Allocator) !Self {
+            return self.toUnmanaged().clone(allocator);
+        }
+
         /// Insert `item` at index `n` by moving `list[n .. list.len]` to make room.
         /// This operation is O(N).
         pub fn insert(self: *Self, n: usize, item: T) !void {
@@ -502,6 +508,15 @@ pub fn ArrayListAlignedUnmanaged(comptime T: type, comptime alignment: ?u29) typ
             try self.append(allocator, sentinel);
             const result = self.toOwnedSlice(allocator);
             return result[0 .. result.len - 1 :sentinel];
+        }
+
+        /// Create a copy of this array list with a new backing store,
+        /// using the specified allocator.
+        pub fn clone(self: Self, allocator: *Allocator) !Self {
+            return Self{
+                .items = try allocator.dupe(self.items),
+                .capacity = self.items.len,
+            };
         }
 
         /// Insert `item` at index `n`. Moves `list[n .. list.len]`

@@ -263,7 +263,7 @@ pub const DeclGen = struct {
     /// Generate the code for `decl`. If a reportable error occurred during code generation,
     /// a message is returned by this function. Callee owns the memory. If this function
     /// returns such a reportable error, it is valid to be called again for a different decl.
-    pub fn gen(self: *DeclGen, decl: *Decl, air: Air, liveness: Liveness) !?*Module.ErrorMsg {
+    pub fn gen(self: *DeclGen, decl: *Decl, air: Air, liveness: Liveness) error{OutOfMemory}!?*Module.ErrorMsg {
         // Reset internal resources, we don't want to re-allocate these.
         self.air = air;
         self.liveness = liveness;
@@ -276,8 +276,12 @@ pub const DeclGen = struct {
         self.decl = decl;
         self.error_msg = null;
 
-        try self.genDecl();
-        return self.error_msg;
+        self.genDecl() catch |err| switch (err) {
+            error.AnalysisFail => return self.error_msg,
+            else => |narrow| return narrow,
+        };
+
+        return null;
     }
 
     /// Free resources owned by the DeclGen.
