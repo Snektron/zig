@@ -5,7 +5,7 @@ const log = std.log.scoped(.codegen);
 const assert = std.debug.assert;
 
 const spec = @import("spirv/spec.zig");
-const builder = @import("spirv/builder.zig");
+const Section = @import("spirv/Section.zig");
 
 const Module = @import("../Module.zig");
 const Decl = Module.Decl;
@@ -38,25 +38,28 @@ pub const BlockMap = std.AutoHashMap(Air.Inst.Index, struct {
 /// That includes the actual instructions, the current result-id bound, and data structures for querying result-id's
 /// of data which needs to be persistent over different calls to Decl code generation.
 pub const SPIRVModule = struct {
+    /// A general-purpose allocator which may be used to allocate resources for this module.
+    gpa: *Allocator,
+
     /// The parent module.
     module: *Module,
 
-    /// The SPIR-V builder used to construct the module.
-    builder: builder.Builder,
+    /// SPIR-V instructions return result-ids. This variable holds the module-wide counter for these.
+    next_result_id: u32,
 
     /// Code of the actual SPIR-V sections, divided into the relevant logical sections.
     sections: struct {
         /// OpCapability and OpExtension instructions (in that order).
-        capabilities_and_extensions: builder.Section = .{},
+        capabilities_and_extensions: Section = .{},
 
         /// OpString, OpSourceExtension, OpSource, OpSourceContinued.
-        debug_strings: builder.Section = .{},
+        debug_strings: Section = .{},
 
         /// Type declaration instructions, constant instructions, global variable declarations, OpUndef instructions.
-        types_globals_constants: builder.Section = .{},
+        types_globals_constants: Section = .{},
 
         /// Regular functions.
-        fn_decls: builder.Section = .{},
+        fn_decls: Section = .{},
     },
 
     /// Global type cache. Note, apparently SPIRV-types are _required_ to be unique, so this map
@@ -70,8 +73,9 @@ pub const SPIRVModule = struct {
 
     pub fn init(gpa: *Allocator, module: *Module) SPIRVModule {
         return .{
+            .gpa = gpa,
             .module = module,
-            .builder = builder.Builder.init(gpa),
+            .next_result_id = 1, // 0 is an invalid SPIR-V result ID.
             .sections = .{},
             .types = TypeMap.init(gpa),
             .file_names = std.StringHashMap(IdRef).init(gpa),
@@ -79,10 +83,10 @@ pub const SPIRVModule = struct {
     }
 
     pub fn deinit(self: *SPIRVModule) void {
-        self.sections.capabilities_and_extensions.deinit(self.builder);
-        self.sections.debug_strings.deinit(self.builder);
-        self.sections.types_globals_constants.deinit(self.builder);
-        self.sections.fn_decls.deinit(self.builder);
+        self.sections.capabilities_and_extensions.deinit(self.gpa);
+        self.sections.debug_strings.deinit(self.gpa);
+        self.sections.types_globals_constants.deinit(self.gpa);
+        self.sections.fn_decls.deinit(self.gpa);
 
         self.file_names.deinit();
         self.types.deinit();
@@ -90,8 +94,13 @@ pub const SPIRVModule = struct {
         self.* = undefined;
     }
 
-    fn allocator(self: SPIRVModule) *Allocator {
-        return self.builder.gpa;
+    pub fn allocId(self: *SPIRVModule) spec.IdResult {
+        defer self.next_result_id += 1;
+        return .{.id = self.next_result_id};
+    }
+
+    pub fn idBound(self: SPIRVModule) Word {
+        return self.next_result_id;
     }
 
     /// Fetch the result-id of an OpString instruction that encodes the path of the source
@@ -101,14 +110,14 @@ pub const SPIRVModule = struct {
         const path = decl.getFileScope().sub_file_path;
         const result = try self.file_names.getOrPut(path);
         if (!result.found_existing) {
-            const file_result_id = self.builder.allocId();
+            const file_result_id = self.allocId();
             result.value_ptr.* = file_result_id.toRef();
-            try self.sections.debug_strings.emit(self.builder, .{.OpString = &.{
+            try self.sections.debug_strings.emit(self.gpa, .{.OpString = &.{
                 .id_result = file_result_id,
                 .string = path,
             }});
 
-            try self.sections.debug_strings.emit(self.builder, .{.OpSource = &.{
+            try self.sections.debug_strings.emit(self.gpa, .{.OpSource = &.{
                 .source_language = .Unknown, // TODO: Register Zig source language.
                 .version = 0, // TODO: Zig version as u32?
                 .file = file_result_id.toRef(),
@@ -158,14 +167,14 @@ pub const DeclGen = struct {
     /// we're just going to generate everything after the locals-section in this array.
     /// Note: It will not contain OpFunction, OpFunctionParameter, OpVariable and the
     /// initial OpLabel. These will be generated into spv.sections.fn_decls directly.
-    code: builder.Section,
+    code: Section,
 
-    /// If `gen` returned `Error.AnalysisFail`, this contains an explanatory message.
+    /// If any function returns `Error.CodegenFail`, this contains an explanatory message.
     /// Memory is owned by `module.gpa`.
     error_msg: ?*Module.ErrorMsg,
 
     /// Possible errors the `gen` function may return.
-    const Error = error{ AnalysisFail, OutOfMemory };
+    const Error = error{ CodegenFail, OutOfMemory };
 
     /// This structure is used to return information about a type typically used for
     /// arithmetic operations. These types may either be integers, floats, or a vector
@@ -220,10 +229,10 @@ pub const DeclGen = struct {
             .decl = undefined,
             .air = undefined,
             .liveness = undefined,
-            .args = std.ArrayList(IdRef).init(spv.allocator()),
+            .args = std.ArrayList(IdRef).init(spv.gpa),
             .next_arg_index = undefined,
-            .inst_results = InstMap.init(spv.allocator()),
-            .blocks = BlockMap.init(spv.allocator()),
+            .inst_results = InstMap.init(spv.gpa),
+            .blocks = BlockMap.init(spv.gpa),
             .current_block_label_id = undefined,
             .code = .{},
             .error_msg = undefined,
@@ -247,7 +256,7 @@ pub const DeclGen = struct {
         self.error_msg = null;
 
         self.genDecl() catch |err| switch (err) {
-            error.AnalysisFail => return self.error_msg,
+            error.CodegenFail => return self.error_msg,
             else => |narrow| return narrow,
         };
 
@@ -259,7 +268,7 @@ pub const DeclGen = struct {
         self.args.deinit();
         self.inst_results.deinit();
         self.blocks.deinit();
-        self.code.deinit(self.spv.builder);
+        self.code.deinit(self.spv.gpa);
     }
 
     /// Return the target which we are currently compiling against.
@@ -270,19 +279,19 @@ pub const DeclGen = struct {
     /// Abort this declGen with a particular message.
     fn fail(self: *DeclGen, comptime format: []const u8, args: anytype) Error {
         @setCold(true);
-        assert(self.err_msg == null);
+        assert(self.error_msg == null);
         const src: LazySrcLoc = .{ .node_offset = 0 };
         const src_loc = src.toSrcLoc(self.decl);
         self.error_msg = try Module.ErrorMsg.create(self.spv.module.gpa, src_loc, format, args);
-        return error.AnalysisFail;
+        return error.CodegenFail;
     }
 
     fn todo(self: *DeclGen, comptime format: []const u8, args: anytype) Error {
         @setCold(true);
-        assert(self.err_msg == null);
+        assert(self.error_msg == null);
         const src: LazySrcLoc = .{ .node_offset = 0 };
-        const src_loc = @as(LazySrcLoc, .{ .node_offset = 0 }).toSrcLoc(self.decl);
-        self.err_msg = try Module.ErrorMsg.create(self.gpa, src_loc, "TODO (SPIR-V): " ++ format, args);
+        const src_loc = src.toSrcLoc(self.decl);
+        self.error_msg = try Module.ErrorMsg.create(self.spv.module.gpa, src_loc, "TODO (SPIR-V): " ++ format, args);
         return error.CodegenFail;
     }
 
@@ -298,7 +307,7 @@ pub const DeclGen = struct {
     /// Start a new SPIRV Block. Emits the label of the new block, and
     // stores which block we are currently generating.
     fn beginSPIRVBlock(self: *DeclGen, label_id: IdResult) !void {
-        try self.code.emit(self.spv.builder, .{.OpLabel = &.{
+        try self.code.emit(self.spv.gpa, .{.OpLabel = &.{
             .id_result = label_id,
         }});
         self.current_block_label_id = label_id.toRef();
@@ -403,11 +412,11 @@ pub const DeclGen = struct {
     fn genConstant(self: *DeclGen, ty: Type, val: Value) Error!IdRef {
         const target = self.getTarget();
         const section = &self.spv.sections.types_globals_constants;
-        const result_id = self.spv.builder.allocId();
+        const result_id = self.spv.allocId();
         const result_type_id = try self.genType(ty);
 
         if (val.isUndef()) {
-            try section.emit(self.spv.builder, .{.OpUndef = &.{
+            try section.emit(self.spv.gpa, .{.OpUndef = &.{
                 .id_result_type = result_type_id,
                 .id_result = result_id,
             }});
@@ -437,7 +446,7 @@ pub const DeclGen = struct {
                     else => unreachable,
                 };
 
-                try section.emit(self.spv.builder, .{.OpConstant = &.{
+                try section.emit(self.spv.gpa, .{.OpConstant = &.{
                     .id_result_type = result_type_id,
                     .id_result = result_id,
                     .value = value,
@@ -446,9 +455,9 @@ pub const DeclGen = struct {
             .Bool => {
                 const operands = .{.id_result_type = result_type_id, .id_result = result_id};
                 if (val.toBool()) {
-                    try section.emit(self.spv.builder, .{.OpConstantTrue = &operands});
+                    try section.emit(self.spv.gpa, .{.OpConstantTrue = &operands});
                 } else {
-                    try section.emit(self.spv.builder, .{.OpConstantFalse = &operands});
+                    try section.emit(self.spv.gpa, .{.OpConstantFalse = &operands});
                 }
             },
             .Float => {
@@ -466,7 +475,7 @@ pub const DeclGen = struct {
                     else => unreachable,
                 };
 
-                try section.emit(self.spv.builder, .{.OpConstant = &.{
+                try section.emit(self.spv.gpa, .{.OpConstant = &.{
                     .id_result_type = result_type_id,
                     .id_result = result_id,
                     .value = value,
@@ -487,11 +496,11 @@ pub const DeclGen = struct {
 
         const target = self.getTarget();
         const section = &self.spv.sections.types_globals_constants;
-        const result_id = self.spv.builder.allocId();
+        const result_id = self.spv.allocId();
 
         switch (ty.zigTypeTag()) {
-            .Void => try section.emit(self.spv.builder, .{.OpTypeVoid = &.{.id_result = result_id}}),
-            .Bool => try section.emit(self.spv.builder, .{.OpTypeBool = &.{.id_result = result_id}}),
+            .Void => try section.emit(self.spv.gpa, .{.OpTypeVoid = &.{.id_result = result_id}}),
+            .Bool => try section.emit(self.spv.gpa, .{.OpTypeBool = &.{.id_result = result_id}}),
             .Int => {
                 const int_info = ty.intInfo(target);
                 const backing_bits = self.backingIntBits(int_info.bits) orelse {
@@ -501,7 +510,7 @@ pub const DeclGen = struct {
 
                 // TODO: If backing_bits != int_info.bits, a duplicate type might be generated here.
                 // TODO: That is actually incorrect SPIR-V apparently.
-                try section.emit(self.spv.builder, .{.OpTypeInt = &.{
+                try section.emit(self.spv.gpa, .{.OpTypeInt = &.{
                     .id_result = result_id,
                     .width = backing_bits,
                     .signedness = switch (int_info.signedness) {
@@ -526,7 +535,7 @@ pub const DeclGen = struct {
                     return self.fail("Floating point width of {} bits is not supported for the current SPIR-V feature set", .{bits});
                 }
 
-                try section.emit(self.spv.builder, .{.OpTypeFloat = &.{
+                try section.emit(self.spv.gpa, .{.OpTypeFloat = &.{
                     .id_result = result_id,
                     .width = bits,
                 }});
@@ -549,7 +558,7 @@ pub const DeclGen = struct {
                 const return_type_id = try self.genType(ty.fnReturnType());
 
                 // result id + result type id + parameter type ids.
-                try section.emitRaw(self.spv.builder, .OpTypeFunction, 2 + @intCast(u16, ty.fnParamLen()));
+                try section.emitRaw(self.spv.gpa, .OpTypeFunction, 2 + @intCast(u16, ty.fnParamLen()));
                 section.writeOperand(IdResult, result_id);
                 section.writeOperand(IdRef, return_type_id.toRef());
 
@@ -598,14 +607,14 @@ pub const DeclGen = struct {
         assert(ty.zigTypeTag() == .Pointer);
 
         const section = &self.spv.sections.types_globals_constants;
-        const result_id = self.spv.builder.allocId();
+        const result_id = self.spv.allocId();
 
         // TODO: There are many constraints which are ignored for now: We may only create pointers to certain types, and to other types
         // if more capabilities are enabled. For example, we may only create pointers to f16 if Float16Buffer is enabled.
         // These also relates to the pointer's address space.
         const child_id = try self.genType(ty.elemType());
 
-        try section.emit(self.spv.builder, .{.OpTypePointer = &.{
+        try section.emit(self.spv.gpa, .{.OpTypePointer = &.{
             .id_result = result_id,
             .storage_class = storage_class,
             .type = child_id.toRef(),
@@ -621,7 +630,7 @@ pub const DeclGen = struct {
         if (decl.val.castTag(.function)) |_| {
             assert(decl.ty.zigTypeTag() == .Fn);
             const prototype_id = try self.genType(decl.ty);
-            try self.spv.sections.fn_decls.emit(self.spv.builder, .{.OpFunction = &.{
+            try self.spv.sections.fn_decls.emit(self.spv.gpa, .{.OpFunction = &.{
                 .id_result_type = self.spv.types.get(decl.ty.fnReturnType()).?, // This type should be generated along with the prototype.
                 .id_result = result_id,
                 .function_control = .{}, // TODO: We can set inline here if the type requires it.
@@ -633,8 +642,8 @@ pub const DeclGen = struct {
 
             try self.args.ensureUnusedCapacity(params);
             while (i < params) : (i += 1) {
-                const arg_result_id = self.spv.builder.allocId();
-                try self.spv.sections.fn_decls.emit(self.spv.builder, .{.OpFunctionParameter = &.{
+                const arg_result_id = self.spv.allocId();
+                try self.spv.sections.fn_decls.emit(self.spv.gpa, .{.OpFunctionParameter = &.{
                     .id_result_type = self.spv.types.get(decl.ty.fnParamType(i)).?,
                     .id_result = arg_result_id,
                 }});
@@ -642,11 +651,11 @@ pub const DeclGen = struct {
             }
 
             // TODO: This could probably be done in a better way...
-            const root_block_id = self.spv.builder.allocId();
+            const root_block_id = self.spv.allocId();
 
             // We need to generate the label directly in the fn_decls here because we're going to write the local variables after
             // here. Since we're not generating in self.code, we're just going to bypass self.beginSPIRVBlock here.
-            try self.spv.sections.fn_decls.emit(self.spv.builder, .{.OpLabel = &.{
+            try self.spv.sections.fn_decls.emit(self.spv.gpa, .{.OpLabel = &.{
                 .id_result = root_block_id,
             }});
             self.current_block_label_id = root_block_id.toRef();
@@ -655,9 +664,9 @@ pub const DeclGen = struct {
             try self.genBody(main_body);
 
             // Append the actual code into the fn_decls section.
-            try self.spv.sections.fn_decls.append(self.spv.builder, self.code);
+            try self.spv.sections.fn_decls.append(self.spv.gpa, self.code);
 
-            try self.spv.sections.fn_decls.emit(self.spv.builder, .OpFunctionEnd);
+            try self.spv.sections.fn_decls.emit(self.spv.gpa, .OpFunctionEnd);
         } else {
             return self.todo("Generate decl type {}", .{decl.ty.zigTypeTag()});
         }
@@ -720,10 +729,10 @@ pub const DeclGen = struct {
         const bin_op = self.air.instructions.items(.data)[inst].bin_op;
         const lhs_id = try self.resolve(bin_op.lhs);
         const rhs_id = try self.resolve(bin_op.rhs);
-        const result_id = self.spv.builder.allocId();
+        const result_id = self.spv.allocId();
         const result_type_id = try self.genType(self.air.typeOfIndex(inst));
 
-        try self.code.emitRaw(self.spv.builder, opcode, 4);
+        try self.code.emitRaw(self.spv.gpa, opcode, 4);
         self.code.writeOperand(IdResultType, result_type_id);
         self.code.writeOperand(IdResult, result_id);
         self.code.writeOperand(IdRef, lhs_id);
@@ -740,7 +749,7 @@ pub const DeclGen = struct {
         const lhs_id = try self.resolve(bin_op.lhs);
         const rhs_id = try self.resolve(bin_op.rhs);
 
-        const result_id = self.spv.builder.allocId();
+        const result_id = self.spv.allocId();
         const result_type_id = try self.genType(ty);
 
         assert(self.air.typeOf(bin_op.lhs).eql(ty));
@@ -766,7 +775,7 @@ pub const DeclGen = struct {
         };
         const opcode = ops[opcode_index];
 
-        try self.code.emitRaw(self.spv.builder, opcode, 4);
+        try self.code.emitRaw(self.spv.gpa, opcode, 4);
         self.code.writeOperand(IdResultType, result_type_id);
         self.code.writeOperand(IdResult, result_id);
         self.code.writeOperand(IdRef, lhs_id);
@@ -782,7 +791,7 @@ pub const DeclGen = struct {
         const bin_op = self.air.instructions.items(.data)[inst].bin_op;
         const lhs_id = try self.resolve(bin_op.lhs);
         const rhs_id = try self.resolve(bin_op.rhs);
-        const result_id = self.spv.builder.allocId();
+        const result_id = self.spv.allocId();
         const result_type_id = try self.genType(Type.initTag(.bool));
         const op_ty = self.air.typeOf(bin_op.lhs);
         assert(op_ty.eql(self.air.typeOf(bin_op.rhs)));
@@ -806,7 +815,7 @@ pub const DeclGen = struct {
             },
         };
         const opcode = ops[opcode_index];
-        try self.code.emitRaw(self.spv.builder, opcode, 4);
+        try self.code.emitRaw(self.spv.gpa, opcode, 4);
         self.code.writeOperand(IdResultType, result_type_id);
         self.code.writeOperand(IdResult, result_id);
         self.code.writeOperand(IdRef, lhs_id);
@@ -817,9 +826,9 @@ pub const DeclGen = struct {
     fn airNot(self: *DeclGen, inst: Air.Inst.Index) !IdRef {
         const ty_op = self.air.instructions.items(.data)[inst].ty_op;
         const operand_id = try self.resolve(ty_op.operand);
-        const result_id = self.spv.builder.allocId();
+        const result_id = self.spv.allocId();
         const result_type_id = try self.genType(Type.initTag(.bool));
-        try self.code.emit(self.spv.builder, .{.OpLogicalNot = &.{
+        try self.code.emit(self.spv.gpa, .{.OpLogicalNot = &.{
             .id_result_type = result_type_id,
             .id_result = result_id,
             .operand = operand_id,
@@ -831,11 +840,11 @@ pub const DeclGen = struct {
         const ty = self.air.typeOfIndex(inst);
         const storage_class = spec.StorageClass.Function;
         const result_type_id = try self.genPointerType(ty, storage_class);
-        const result_id = self.spv.builder.allocId();
+        const result_id = self.spv.allocId();
 
         // Rather than generating into code here, we're just going to generate directly into the fn_decls section so that
         // variable declarations appear in the first block of the function as required.
-        try self.spv.sections.fn_decls.emit(self.spv.builder, .{.OpVariable = &.{
+        try self.spv.sections.fn_decls.emit(self.spv.gpa, .{.OpVariable = &.{
             .id_result_type = result_type_id,
             .id_result = result_id,
             .storage_class = storage_class,
@@ -856,10 +865,10 @@ pub const DeclGen = struct {
         // the current block by first generating the code of the block, then a label, and then generate the rest of the current
         // ir.Block in a different SPIR-V block.
 
-        const label_id = self.spv.builder.allocId();
+        const label_id = self.spv.allocId();
 
         // 4 chosen as arbitrary initial capacity.
-        var incoming_blocks = try std.ArrayListUnmanaged(IncomingBlock).initCapacity(self.spv.allocator(), 4);
+        var incoming_blocks = try std.ArrayListUnmanaged(IncomingBlock).initCapacity(self.spv.gpa, 4);
 
         try self.blocks.putNoClobber(inst, .{
             .label_id = label_id.toRef(),
@@ -867,7 +876,7 @@ pub const DeclGen = struct {
         });
         defer {
             assert(self.blocks.remove(inst));
-            incoming_blocks.deinit(self.spv.allocator());
+            incoming_blocks.deinit(self.spv.gpa);
         }
 
         const ty = self.air.typeOfIndex(inst);
@@ -884,7 +893,7 @@ pub const DeclGen = struct {
 
         // Combine the result from the blocks using the Phi instruction.
 
-        const result_id = self.spv.builder.allocId();
+        const result_id = self.spv.allocId();
 
         // TODO: OpPhi is limited in the types that it may produce, such as pointers. Figure out which other types
         // are not allowed to be created from a phi node, and throw an error for those. For now, genType already throws
@@ -892,7 +901,7 @@ pub const DeclGen = struct {
         const result_type_id = try self.genType(ty);
         _ = result_type_id;
 
-        try self.code.emitRaw(self.spv.builder, .OpPhi, 2 + @intCast(u16, incoming_blocks.items.len * 2)); // result type + result + variable/parent...
+        try self.code.emitRaw(self.spv.gpa, .OpPhi, 2 + @intCast(u16, incoming_blocks.items.len * 2)); // result type + result + variable/parent...
 
         for (incoming_blocks.items) |incoming| {
             self.code.writeOperand(IdRef, incoming.break_value_id);
@@ -910,13 +919,13 @@ pub const DeclGen = struct {
         if (operand_ty.hasCodeGenBits()) {
             const operand_id = try self.resolve(br.operand);
             // current_block_label_id should not be undefined here, lest there is a br or br_void in the function's body.
-            try block.incoming_blocks.append(self.spv.allocator(), .{
+            try block.incoming_blocks.append(self.spv.gpa, .{
                 .src_label_id = self.current_block_label_id,
                 .break_value_id = operand_id,
             });
         }
 
-        try self.code.emit(self.spv.builder, .{.OpBranch = &.{
+        try self.code.emit(self.spv.gpa, .{.OpBranch = &.{
             .target_label = block.label_id,
         }});
     }
@@ -929,13 +938,13 @@ pub const DeclGen = struct {
         const condition_id = try self.resolve(pl_op.operand);
 
         // These will always generate a new SPIR-V block, since they are ir.Body and not ir.Block.
-        const then_label_id = self.spv.builder.allocId();
-        const else_label_id = self.spv.builder.allocId();
+        const then_label_id = self.spv.allocId();
+        const else_label_id = self.spv.allocId();
 
         // TODO: We can generate OpSelectionMerge here if we know the target block that both of these will resolve to,
         // but i don't know if those will always resolve to the same block.
 
-        try self.code.emit(self.spv.builder, .{.OpBranchConditional = &.{
+        try self.code.emit(self.spv.gpa, .{.OpBranchConditional = &.{
             .condition = condition_id,
             .true_label = then_label_id.toRef(),
             .false_label = else_label_id.toRef(),
@@ -950,7 +959,7 @@ pub const DeclGen = struct {
     fn airDbgStmt(self: *DeclGen, inst: Air.Inst.Index) !void {
         const dbg_stmt = self.air.instructions.items(.data)[inst].dbg_stmt;
         const src_fname_id = try self.spv.resolveSourceFileName(self.decl);
-        try self.code.emit(self.spv.builder, .{.OpLine = &.{
+        try self.code.emit(self.spv.gpa, .{.OpLine = &.{
             .file = src_fname_id,
             .line = dbg_stmt.line,
             .column = dbg_stmt.column,
@@ -963,13 +972,13 @@ pub const DeclGen = struct {
         const ty = self.air.typeOfIndex(inst);
 
         const result_type_id = try self.genType(ty);
-        const result_id = self.spv.builder.allocId();
+        const result_id = self.spv.allocId();
 
         const access = spec.MemoryAccess.Extended{
             .Volatile = ty.isVolatilePtr(),
         };
 
-        try self.code.emit(self.spv.builder, .{.OpLoad = &.{
+        try self.code.emit(self.spv.gpa, .{.OpLoad = &.{
             .id_result_type = result_type_id,
             .id_result = result_id,
             .pointer = operand_id,
@@ -983,10 +992,10 @@ pub const DeclGen = struct {
         const ty_pl = self.air.instructions.items(.data)[inst].ty_pl;
         const loop = self.air.extraData(Air.Block, ty_pl.payload);
         const body = self.air.extra[loop.end..][0..loop.data.body_len];
-        const loop_label_id = self.spv.builder.allocId();
+        const loop_label_id = self.spv.allocId();
 
         // Jump to the loop entry point
-        try self.code.emit(self.spv.builder, .{.OpBranch = &.{
+        try self.code.emit(self.spv.gpa, .{.OpBranch = &.{
             .target_label = loop_label_id.toRef(),
         }});
 
@@ -995,7 +1004,7 @@ pub const DeclGen = struct {
         try self.beginSPIRVBlock(loop_label_id);
         try self.genBody(body);
 
-        try self.code.emit(self.spv.builder, .{.OpBranch = &.{
+        try self.code.emit(self.spv.gpa, .{.OpBranch = &.{
             .target_label = loop_label_id.toRef(),
         }});
     }
@@ -1004,11 +1013,11 @@ pub const DeclGen = struct {
         const operand = self.air.instructions.items(.data)[inst].un_op;
         const operand_ty = self.air.typeOf(operand);
         if (operand_ty.hasCodeGenBits()) {
-            try self.code.emit(self.spv.builder, .{.OpReturnValue = &.{
+            try self.code.emit(self.spv.gpa, .{.OpReturnValue = &.{
                 .value = try self.resolve(operand),
             }});
         } else {
-            try self.code.emit(self.spv.builder, .OpReturn);
+            try self.code.emit(self.spv.gpa, .OpReturn);
         }
     }
 
@@ -1022,7 +1031,7 @@ pub const DeclGen = struct {
             .Volatile = lhs_ty.isVolatilePtr(),
         };
 
-        try self.code.emit(self.spv.builder, .{.OpStore = &.{
+        try self.code.emit(self.spv.gpa, .{.OpStore = &.{
             .pointer = dst_ptr_id,
             .object = src_val_id,
             .memory_access = access,
@@ -1030,6 +1039,6 @@ pub const DeclGen = struct {
     }
 
     fn airUnreach(self: *DeclGen) !void {
-        try self.code.emit(self.spv.builder, .OpUnreachable);
+        try self.code.emit(self.spv.gpa, .OpUnreachable);
     }
 };

@@ -213,7 +213,7 @@ pub fn flushModule(self: *SpirV, comp: *Compilation) !void {
         for (self.decl_table.keys()) |decl| {
             if (!decl.has_tv) continue;
 
-            decl.fn_link.spirv.id = spv.builder.allocId();
+            decl.fn_link.spirv.id = spv.allocId();
         }
     }
 
@@ -245,7 +245,7 @@ pub fn flushModule(self: *SpirV, comp: *Compilation) !void {
         spec.magic_number,
         (spec.version.major << 16) | (spec.version.minor << 8),
         0, // TODO: Register Zig compiler magic number.
-        spv.builder.idBound(),
+        spv.idBound(),
         0, // Schema (currently reserved for future use in the SPIR-V spec).
     };
 
@@ -317,7 +317,7 @@ fn writeCapabilities(spv: *codegen.SPIRVModule, target: std.Target) !void {
         else => unreachable, // TODO
     };
 
-    try spv.sections.capabilities_and_extensions.emit(spv.builder, .{.OpCapability = &.{
+    try spv.sections.capabilities_and_extensions.emit(spv.gpa, .{.OpCapability = &.{
         .capability = cap,
     }});
 }
@@ -340,7 +340,7 @@ fn writeMemoryModel(spv: *codegen.SPIRVModule, target: std.Target) !void {
         else => unreachable,
     };
 
-    try spv.sections.capabilities_and_extensions.emit(spv.builder, .{.OpMemoryModel = &.{
+    try spv.sections.capabilities_and_extensions.emit(spv.gpa, .{.OpMemoryModel = &.{
         .addressing_model = addressing_model,
         .memory_model = memory_model,
     }});
