@@ -29,6 +29,34 @@ pub fn reset(section: *Section) void {
     section.instructions.items.len = 0;
 }
 
+/// Decorate a result-id.
+pub fn decorate(
+    section: *Section,
+    allocator: *Allocator,
+    target: spec.IdRef,
+    decoration: spec.Decoration.Extended,
+) !void {
+    try section.emit(allocator, .{.OpDecorate = &.{
+        .target = target,
+        .decoration = decoration,
+    }});
+}
+
+/// Decorate a result-id which is a member of some struct.
+pub fn decorateMember(
+    section: *Section,
+    allocator: *Allocator,
+    structure_type: spec.IdRef,
+    member: u32,
+    decoration: spec.Decoration.Extended,
+) !void {
+    try section.emit(allocator, .{.OpMemberDecorate = &.{
+        .structure_type = structure_type,
+        .member = member,
+        .decoration = decoration,
+    }});
+}
+
 /// Write an instruction to this section.
 pub fn emit(
     section: *Section,

@@ -1,7 +1,7 @@
 const adler = @import("hash/adler.zig");
 pub const Adler32 = adler.Adler32;
 
-const auto_hash = @import("hash/auto_hash.zig");
+pub const auto_hash = @import("hash/auto_hash.zig");
 pub const autoHash = auto_hash.autoHash;
 pub const autoHashStrat = auto_hash.hash;
 pub const Strategy = auto_hash.HashStrategy;
