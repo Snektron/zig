@@ -32,6 +32,8 @@ const spec = @import("../codegen/spirv/spec.zig");
 const Word = spec.Word;
 const IdResult = spec.IdResult;
 
+const SpvModule = @import("../codegen/spirv/Module.zig");
+
 const Module = @import("../Module.zig");
 const Compilation = @import("../Compilation.zig");
 const link = @import("../link.zig");
@@ -201,7 +203,10 @@ pub fn flushModule(self: *SpirV, comp: *Compilation) !void {
     const module = self.base.options.module.?;
     const target = comp.getTarget();
 
-    var spv = codegen.SPIRVModule.init(self.base.allocator, module);
+    var arena = std.heap.ArenaAllocator.init(self.base.allocator);
+    defer arena.deinit();
+
+    var spv = SpvModule.init(self.base.allocator, &arena.allocator);
     defer spv.deinit();
 
     // Allocate an ID for every declaration before generating code,
@@ -219,7 +224,7 @@ pub fn flushModule(self: *SpirV, comp: *Compilation) !void {
 
     // Now, actually generate the code for all declarations.
     {
-        var decl_gen = codegen.DeclGen.init(&spv);
+        var decl_gen = codegen.DeclGen.init(module, &spv);
         defer decl_gen.deinit();
 
         var it = self.decl_table.iterator();
@@ -253,10 +258,13 @@ pub fn flushModule(self: *SpirV, comp: *Compilation) !void {
     // follows the SPIR-V logical module format!
     const buffers = &[_][]const Word{
         &header,
-        spv.sections.capabilities_and_extensions.instructions.items,
+        spv.sections.capabilities.instructions.items,
+        spv.sections.extensions.instructions.items,
+        spv.sections.entry_points.instructions.items,
         spv.sections.debug_strings.instructions.items,
+        spv.sections.annotations.instructions.items,
         spv.sections.types_globals_constants.instructions.items,
-        spv.sections.fn_decls.instructions.items,
+        spv.sections.functions.instructions.items,
     };
 
     var iovc_buffers: [buffers.len]std.os.iovec_const = undefined;
@@ -308,7 +316,7 @@ fn cloneAir(air: Air, gpa: *Allocator, value_arena: *Allocator) !Air {
     };
 }
 
-fn writeCapabilities(spv: *codegen.SPIRVModule, target: std.Target) !void {
+fn writeCapabilities(spv: *SpvModule, target: std.Target) !void {
     // TODO: Integrate with a hypothetical feature system
     const cap: spec.Capability = switch (target.os.tag) {
         .opencl => .Kernel,
@@ -317,12 +325,12 @@ fn writeCapabilities(spv: *codegen.SPIRVModule, target: std.Target) !void {
         else => unreachable, // TODO
     };
 
-    try spv.sections.capabilities_and_extensions.emit(spv.gpa, .{.OpCapability = &.{
+    try spv.sections.capabilities.emit(spv.gpa, .{.OpCapability = &.{
         .capability = cap,
     }});
 }
 
-fn writeMemoryModel(spv: *codegen.SPIRVModule, target: std.Target) !void {
+fn writeMemoryModel(spv: *SpvModule, target: std.Target) !void {
     const addressing_model = switch (target.os.tag) {
         .opencl => switch (target.cpu.arch) {
             .spirv32 => spec.AddressingModel.Physical32,
@@ -340,7 +348,8 @@ fn writeMemoryModel(spv: *codegen.SPIRVModule, target: std.Target) !void {
         else => unreachable,
     };
 
-    try spv.sections.capabilities_and_extensions.emit(spv.gpa, .{.OpMemoryModel = &.{
+    // TODO: Put this in a proper section
+    try spv.sections.capabilities.emit(spv.gpa, .{.OpMemoryModel = &.{
         .addressing_model = addressing_model,
         .memory_model = memory_model,
     }});

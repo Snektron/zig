@@ -9,7 +9,7 @@ pub const Type = extern union {
     ptr_otherwise: *Payload,
 
     /// A reference to another SPIR-V type.
-    pub const Ref = u32;
+    pub const Ref = usize;
 
     pub fn initTag(comptime small_tag: Tag) Type {
         comptime assert(@enumToInt(small_tag) < Tag.no_payload_count);
@@ -244,30 +244,30 @@ pub const Type = extern union {
         tag: Tag,
 
         pub const Int = struct {
-            base: Payload,
+            base: Payload = .{.tag = .int},
             width: u32,
             signedness: std.builtin.Signedness,
         };
 
         pub const Float = struct {
-            base: Payload,
+            base: Payload = .{.tag = .float},
             width: u32,
         };
 
         pub const Vector = struct {
-            base: Payload,
+            base: Payload = .{.tag = .vector},
             component_type: Ref,
             component_count: u32,
         };
 
         pub const Matrix = struct {
-            base: Payload,
+            base: Payload = .{.tag = .matrix},
             column_type: Ref,
             column_count: u32,
         };
 
         pub const Image = struct {
-            base: Payload,
+            base: Payload = .{.tag = .image},
             sampled_type: Ref,
             dim: spec.Dim,
             depth: enum(u2) {
@@ -287,12 +287,12 @@ pub const Type = extern union {
         };
 
         pub const SampledImage = struct {
-            base: Payload,
+            base: Payload = .{.tag = .sampled_image},
             image_type: Ref,
         };
 
         pub const Array = struct {
-            base: Payload,
+            base: Payload = .{.tag = .array},
             element_type: Ref,
             /// Note: Must be emitted as constant, not as literal!
             length: u32,
@@ -302,7 +302,7 @@ pub const Type = extern union {
         };
 
         pub const RuntimeArray = struct {
-            base: Payload,
+            base: Payload = .{.tag = .runtime_array},
             element_type: Ref,
             /// Type has the 'ArrayStride' decoration.
             /// If zero, no stride is present.
@@ -310,7 +310,7 @@ pub const Type = extern union {
         };
 
         pub const Struct = struct {
-            base: Payload,
+            base: Payload = .{.tag = .@"struct"},
             members: []Member,
             decorations: StructDecorations,
 
@@ -408,12 +408,12 @@ pub const Type = extern union {
         };
 
         pub const Opaque = struct {
-            base: Payload,
+            base: Payload = .{.tag = .@"opaque"},
             name: []u8,
         };
 
         pub const Pointer = struct {
-            base: Payload,
+            base: Payload = .{.tag = .pointer},
             storage_class: spec.StorageClass,
             child_type: Ref,
             /// Type has the 'ArrayStride' decoration.
@@ -427,13 +427,13 @@ pub const Type = extern union {
         };
 
         pub const Function = struct {
-            base: Payload,
+            base: Payload = .{.tag = .function},
             return_type: Ref,
             parameters: []Ref,
         };
 
         pub const Pipe = struct {
-            base: Payload,
+            base: Payload = .{.tag = .pipe},
             qualifier: spec.AccessQualifier,
         };
     };
