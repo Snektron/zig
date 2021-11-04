@@ -21,6 +21,7 @@ const Type = @import("../type.zig").Type;
 const Value = @import("../value.zig").Value;
 const LazySrcLoc = Module.LazySrcLoc;
 const Air = @import("../Air.zig");
+const Zir = @import("../Zir.zig");
 const Liveness = @import("../Liveness.zig");
 
 const TypeCache = std.HashMapUnmanaged(Type, SpvType.Ref, Type.HashContext64, std.hash_map.default_max_load_percentage);
@@ -635,6 +636,7 @@ pub const DeclGen = struct {
             .ret        => return self.airRet(inst),
             .store      => return self.airStore(inst),
             .unreach    => return self.airUnreach(),
+            .assembly   => return self.airAssembly(inst),
             // zig fmt: on
 
             else => |tag| return self.todo("Implement AIR tag {s}", .{
@@ -960,5 +962,31 @@ pub const DeclGen = struct {
 
     fn airUnreach(self: *DeclGen) !void {
         try self.code.emit(self.spv.gpa, .OpUnreachable);
+    }
+
+    fn airAssembly(self: *DeclGen, inst: Air.Inst.Index) !void {
+        const ty_pl = self.air.instructions.items(.data)[inst].ty_pl;
+        const air_asm = self.air.extraData(Air.Asm, ty_pl.payload);
+        const zir = self.decl.getFileScope().zir;
+        const extended = zir.instructions.items(.data)[air_asm.data.zir_index].extended;
+        const zir_extra = zir.extraData(Zir.Inst.Asm, extended.operand);
+
+        const is_volatile = @truncate(u1, extended.small >> 15) != 0;
+        const clobbers_len = @truncate(u5, extended.small >> 10);
+        const inputs_len = @truncate(u5, extended.small >> 5);
+        const outputs_len = @truncate(u5, extended.small);
+
+        const asm_source = zir.nullTerminatedString(zir_extra.data.asm_source);
+
+        const outputs = @bitCast([]const Air.Inst.Ref, self.air.extra[air_asm.end..][0..outputs_len]);
+        const inputs = @bitCast([]const Air.Inst.Ref, self.air.extra[air_asm.end + outputs_len..][0..inputs_len]);
+
+        _ = outputs;
+        _ = inputs;
+        _ = clobbers_len;
+        _ = is_volatile;
+
+        var assembly = try @import("spirv/Assembly.zig").assemble(self, asm_source);
+        defer assembly.deinit();
     }
 };
