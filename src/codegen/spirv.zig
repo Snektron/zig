@@ -986,7 +986,7 @@ pub const DeclGen = struct {
         _ = clobbers_len;
         _ = is_volatile;
 
-        var assembly = try @import("spirv/Assembly.zig").assemble(self, asm_source);
+        var assembly = try @import("spirv/Assembly.zig").assemble(self, zir_extra.data.src_node, asm_source);
         defer assembly.deinit();
     }
 };
