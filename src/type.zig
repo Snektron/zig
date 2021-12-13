@@ -904,10 +904,12 @@ pub const Type = extern union {
                 });
             },
             .error_set_merged => {
-                const names = self.castTag(.error_set_merged).?.data;
-                const duped_names = try allocator.alloc([]const u8, names.len);
-                for (duped_names) |*name, i| {
-                    name.* = try allocator.dupe(u8, names[i]);
+                const names = self.castTag(.error_set_merged).?.data.keys();
+                var duped_names = Module.ErrorSet.NameMap{};
+                try duped_names.ensureTotalCapacity(allocator, names.len);
+
+                for (names) |name| {
+                    duped_names.putAssumeCapacityNoClobber(name, .{});
                 }
                 return Tag.error_set_merged.create(allocator, duped_names);
             },
@@ -1202,11 +1204,37 @@ pub const Type = extern union {
                     return writer.writeAll(std.mem.sliceTo(error_set.owner_decl.name, 0));
                 },
                 .error_set_inferred => {
-                    const func = ty.castTag(.error_set_inferred).?.data.func;
-                    return writer.print("(inferred error set of {s})", .{func.owner_decl.name});
+                    const data = ty.castTag(.error_set_inferred).?.data;
+                    try writer.print("(inferred error set of `{s}' with functions {{", .{data.func.owner_decl.name});
+
+                    var f_it = data.functions.iterator();
+                    var first = true;
+                    while (f_it.next()) |entry| {
+                        if (first) {
+                            first = false;
+                        } else {
+                            try writer.writeAll(", ");
+                        }
+                        try writer.print("{s}", .{entry.key_ptr.*.owner_decl.name});
+                    }
+
+                    try writer.writeAll("} and errors {");
+
+                    var e_it = data.map.iterator();
+                    first = true;
+                    while (e_it.next()) |entry| {
+                        if (first) {
+                            first = false;
+                        } else {
+                            try writer.writeAll(", ");
+                        }
+                        try writer.writeAll(entry.key_ptr.*);
+                    }
+
+                    return writer.writeAll("})");
                 },
                 .error_set_merged => {
-                    const names = ty.castTag(.error_set_merged).?.data;
+                    const names = ty.castTag(.error_set_merged).?.data.keys();
                     try writer.writeAll("error{");
                     for (names) |name, i| {
                         if (i != 0) try writer.writeByte(',');
@@ -2873,6 +2901,35 @@ pub const Type = extern union {
         };
     }
 
+    /// Returns whether ty, which must be an error set, includes an error `name`.
+    /// Might return a false negative if `ty` is an inferred error set and not fully
+    /// resolved yet.
+    pub fn errorSetHasField(ty: Type, name: []const u8) bool {
+        if (ty.isAnyError()) {
+            return true;
+        }
+
+        switch (ty.tag()) {
+            .error_set_single => {
+                const data = ty.castTag(.error_set_single).?.data;
+                return std.mem.eql(u8, data, name);
+            },
+            .error_set_inferred => {
+                const data = ty.castTag(.error_set_inferred).?.data;
+                return data.map.contains(name);
+            },
+            .error_set_merged => {
+                const data = ty.castTag(.error_set_merged).?.data;
+                return data.contains(name);
+            },
+            .error_set => {
+                const data = ty.castTag(.error_set).?.data;
+                return data.names.contains(name);
+            },
+            else => unreachable,
+        }
+    }
+
     /// Asserts the type is an array or vector.
     pub fn arrayLen(ty: Type) u64 {
         return switch (ty.tag()) {
@@ -4148,7 +4205,7 @@ pub const Type = extern union {
             pub const base_tag = Tag.error_set_merged;
 
             base: Payload = Payload{ .tag = base_tag },
-            data: []const []const u8,
+            data: Module.ErrorSet.NameMap,
         };
 
         pub const ErrorSetInferred = struct {
@@ -4164,11 +4221,12 @@ pub const Type = extern union {
                 /// Other functions with inferred error sets which this error set includes.
                 functions: std.AutoHashMapUnmanaged(*Module.Fn, void),
                 is_anyerror: bool,
+                is_resolved: bool,
 
                 pub fn addErrorSet(self: *Data, gpa: Allocator, err_set_ty: Type) !void {
                     switch (err_set_ty.tag()) {
                         .error_set => {
-                            const names = err_set_ty.castTag(.error_set).?.data.names();
+                            const names = err_set_ty.castTag(.error_set).?.data.names.keys();
                             for (names) |name| {
                                 try self.map.put(gpa, name, {});
                             }
@@ -4178,16 +4236,15 @@ pub const Type = extern union {
                             try self.map.put(gpa, name, {});
                         },
                         .error_set_inferred => {
-                            const func = err_set_ty.castTag(.error_set_inferred).?.data.func;
-                            try self.functions.put(gpa, func, {});
-                            var it = func.owner_decl.ty.fnReturnType().errorUnionSet()
-                                .castTag(.error_set_inferred).?.data.map.iterator();
-                            while (it.next()) |entry| {
-                                try self.map.put(gpa, entry.key_ptr.*, {});
+                            const data =  err_set_ty.castTag(.error_set_inferred).?.data;
+                            try self.functions.put(gpa, data.func, {});
+                            var it = data.map.keyIterator();
+                            while (it.next()) |name_ptr| {
+                                try self.map.put(gpa, name_ptr.*, {});
                             }
                         },
                         .error_set_merged => {
-                            const names = err_set_ty.castTag(.error_set_merged).?.data;
+                            const names = err_set_ty.castTag(.error_set_merged).?.data.keys();
                             for (names) |name| {
                                 try self.map.put(gpa, name, {});
                             }

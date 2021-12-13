@@ -2025,15 +2025,24 @@ fn zirErrorSetDecl(
     }, type_name);
     new_decl.owns_tv = true;
     errdefer sema.mod.abortAnonDecl(new_decl);
-    const names = try new_decl_arena_allocator.alloc([]const u8, fields.len);
-    for (fields) |str_index, i| {
-        names[i] = try new_decl_arena_allocator.dupe(u8, sema.code.nullTerminatedString(str_index));
+
+    var names = Module.ErrorSet.NameMap{};
+    try names.ensureUnusedCapacity(new_decl_arena_allocator, fields.len);
+
+    for (fields) |str_index| {
+        const name = try new_decl_arena_allocator.dupe(u8, sema.code.nullTerminatedString(str_index));
+
+        // TODO: This check should be performed in AstGen instead.
+        const result = names.getOrPutAssumeCapacity(name);
+        if (result.found_existing) {
+            return sema.fail(block, src, "duplicate error set field {s}", .{name});
+        }
     }
+
     error_set.* = .{
         .owner_decl = new_decl,
         .node_offset = inst_data.src_node,
-        .names_ptr = names.ptr,
-        .names_len = @intCast(u32, names.len),
+        .names = names,
     };
     try new_decl.finalizeNewArena(&new_decl_arena);
     return sema.analyzeDeclVal(block, src, new_decl);
@@ -4556,63 +4565,43 @@ fn zirMergeErrorSets(sema: *Sema, block: *Block, inst: Zir.Inst.Index) CompileEr
         return Air.Inst.Ref.anyerror_type;
     }
     // Resolve both error sets now.
-    var set: std.StringHashMapUnmanaged(void) = .{};
-    defer set.deinit(sema.gpa);
+    const lhs_names = switch (lhs_ty.tag()) {
+        .error_set_single => blk: {
+            // Work around coercion problems
+            const tmp: *const [1][]const u8 = &lhs_ty.castTag(.error_set_single).?.data;
+            break :blk tmp;
+        },
+        .error_set_merged => lhs_ty.castTag(.error_set_merged).?.data.keys(),
+        .error_set => lhs_ty.castTag(.error_set).?.data.names.keys(),
+        else => unreachable,
+    };
 
-    switch (lhs_ty.tag()) {
-        .error_set_single => {
-            const name = lhs_ty.castTag(.error_set_single).?.data;
-            try set.put(sema.gpa, name, {});
+    const rhs_names = switch (rhs_ty.tag()) {
+        .error_set_single => blk: {
+            const tmp: *const [1][]const u8 = &rhs_ty.castTag(.error_set_single).?.data;
+            break :blk tmp;
         },
-        .error_set_merged => {
-            const names = lhs_ty.castTag(.error_set_merged).?.data;
-            for (names) |name| {
-                try set.put(sema.gpa, name, {});
-            }
-        },
-        .error_set => {
-            const lhs_set = lhs_ty.castTag(.error_set).?.data;
-            try set.ensureUnusedCapacity(sema.gpa, lhs_set.names_len);
-            for (lhs_set.names_ptr[0..lhs_set.names_len]) |name| {
-                set.putAssumeCapacityNoClobber(name, {});
-            }
-        },
+        .error_set_merged => rhs_ty.castTag(.error_set_merged).?.data.keys(),
+        .error_set => rhs_ty.castTag(.error_set).?.data.names.keys(),
         else => unreachable,
-    }
-    switch (rhs_ty.tag()) {
-        .error_set_single => {
-            const name = rhs_ty.castTag(.error_set_single).?.data;
-            try set.put(sema.gpa, name, {});
-        },
-        .error_set_merged => {
-            const names = rhs_ty.castTag(.error_set_merged).?.data;
-            for (names) |name| {
-                try set.put(sema.gpa, name, {});
-            }
-        },
-        .error_set => {
-            const rhs_set = rhs_ty.castTag(.error_set).?.data;
-            try set.ensureUnusedCapacity(sema.gpa, rhs_set.names_len);
-            for (rhs_set.names_ptr[0..rhs_set.names_len]) |name| {
-                set.putAssumeCapacity(name, {});
-            }
-        },
-        else => unreachable,
-    }
+    };
 
     // TODO do we really want to create a Decl for this?
     // The reason we do it right now is for memory management.
     var anon_decl = try block.startAnonDecl();
     defer anon_decl.deinit();
 
-    const new_names = try anon_decl.arena().alloc([]const u8, set.count());
-    var it = set.keyIterator();
-    var i: usize = 0;
-    while (it.next()) |key| : (i += 1) {
-        new_names[i] = key.*;
+    var names = Module.ErrorSet.NameMap{};
+    // TODO: Guess is an upper bound, but maybe this needs to be reduced by computing the exact size first.
+    try names.ensureUnusedCapacity(anon_decl.arena(), @intCast(u32, lhs_names.len + rhs_names.len));
+    for (lhs_names) |name| {
+        names.putAssumeCapacityNoClobber(name, {});
+    }
+    for (rhs_names) |name| {
+        names.putAssumeCapacity(name, {});
     }
 
-    const err_set_ty = try Type.Tag.error_set_merged.create(anon_decl.arena(), new_names);
+    const err_set_ty = try Type.Tag.error_set_merged.create(anon_decl.arena(), names);
     const err_set_decl = try anon_decl.finish(
         Type.type,
         try Value.Tag.ty.create(anon_decl.arena(), err_set_ty),
@@ -5125,6 +5114,7 @@ fn funcCommon(
                 .map = .{},
                 .functions = .{},
                 .is_anyerror = false,
+                .is_resolved = false,
             });
             break :blk try Type.Tag.error_union.create(sema.arena, .{
                 .error_set = error_set_ty,
@@ -11425,14 +11415,8 @@ fn fieldVal(
             switch (child_type.zigTypeTag()) {
                 .ErrorSet => {
                     const name: []const u8 = if (child_type.castTag(.error_set)) |payload| blk: {
-                        const error_set = payload.data;
-                        // TODO this is O(N). I'm putting off solving this until we solve inferred
-                        // error sets at the same time.
-                        const names = error_set.names_ptr[0..error_set.names_len];
-                        for (names) |name| {
-                            if (mem.eql(u8, field_name, name)) {
-                                break :blk name;
-                            }
+                        if (payload.data.names.getEntry(field_name)) |entry| {
+                            break :blk entry.key_ptr.*;
                         }
                         return sema.fail(block, src, "no error named '{s}' in '{}'", .{
                             field_name, child_type,
@@ -11630,14 +11614,8 @@ fn fieldPtr(
                 .ErrorSet => {
                     // TODO resolve inferred error sets
                     const name: []const u8 = if (child_type.castTag(.error_set)) |payload| blk: {
-                        const error_set = payload.data;
-                        // TODO this is O(N). I'm putting off solving this until we solve inferred
-                        // error sets at the same time.
-                        const names = error_set.names_ptr[0..error_set.names_len];
-                        for (names) |name| {
-                            if (mem.eql(u8, field_name, name)) {
-                                break :blk name;
-                            }
+                        if (payload.data.names.getEntry(field_name)) |entry| {
+                            break :blk entry.key_ptr.*;
                         }
                         return sema.fail(block, src, "no error named '{s}' in '{}'", .{
                             field_name, child_type,
@@ -12207,7 +12185,7 @@ fn coerce(
     const arena = sema.arena;
     const target = sema.mod.getTarget();
 
-    const in_memory_result = coerceInMemoryAllowed(dest_ty, inst_ty, false, target);
+    const in_memory_result = try sema.coerceInMemoryAllowed(dest_ty, inst_ty, false, target);
     if (in_memory_result == .ok) {
         if (try sema.resolveMaybeUndefVal(block, inst_src, inst)) |val| {
             // Keep the comptime Value representation; take the new type.
@@ -12266,7 +12244,7 @@ fn coerce(
                 if (inst_ty.isConstPtr() and dest_is_mut) break :single_item;
                 if (inst_ty.isVolatilePtr() and !dest_info.@"volatile") break :single_item;
                 if (inst_ty.ptrAddressSpace() != dest_info.@"addrspace") break :single_item;
-                switch (coerceInMemoryAllowed(array_elem_ty, ptr_elem_ty, dest_is_mut, target)) {
+                switch (try sema.coerceInMemoryAllowed(array_elem_ty, ptr_elem_ty, dest_is_mut, target)) {
                     .ok => {},
                     .no_match => break :single_item,
                 }
@@ -12285,7 +12263,7 @@ fn coerce(
                 if (inst_ty.ptrAddressSpace() != dest_info.@"addrspace") break :src_array_ptr;
 
                 const dst_elem_type = dest_info.pointee_type;
-                switch (coerceInMemoryAllowed(dst_elem_type, array_elem_type, dest_is_mut, target)) {
+                switch (try sema.coerceInMemoryAllowed(dst_elem_type, array_elem_type, dest_is_mut, target)) {
                     .ok => {},
                     .no_match => break :src_array_ptr,
                 }
@@ -12324,7 +12302,7 @@ fn coerce(
                 const src_elem_ty = inst_ty.childType();
                 const dest_is_mut = dest_info.mutable;
                 const dst_elem_type = dest_info.pointee_type;
-                switch (coerceInMemoryAllowed(dst_elem_type, src_elem_ty, dest_is_mut, target)) {
+                switch (try sema.coerceInMemoryAllowed(dst_elem_type, src_elem_ty, dest_is_mut, target)) {
                     .ok => {},
                     .no_match => break :src_c_ptr,
                 }
@@ -12467,7 +12445,13 @@ const InMemoryCoercionResult = enum {
 /// * sentinel-terminated pointers can coerce into `[*]`
 /// TODO improve this function to report recursive compile errors like it does in stage1.
 /// look at the function types_match_const_cast_only
-fn coerceInMemoryAllowed(dest_ty: Type, src_ty: Type, dest_is_mut: bool, target: std.Target) InMemoryCoercionResult {
+fn coerceInMemoryAllowed(
+    sema: *Sema,
+    dest_ty: Type,
+    src_ty: Type,
+    dest_is_mut: bool,
+    target: std.Target
+) CompileError!InMemoryCoercionResult {
     if (dest_ty.eql(src_ty))
         return .ok;
 
@@ -12476,32 +12460,35 @@ fn coerceInMemoryAllowed(dest_ty: Type, src_ty: Type, dest_is_mut: bool, target:
     var src_buf: Type.Payload.ElemType = undefined;
     if (dest_ty.ptrOrOptionalPtrTy(&dest_buf)) |dest_ptr_ty| {
         if (src_ty.ptrOrOptionalPtrTy(&src_buf)) |src_ptr_ty| {
-            return coerceInMemoryAllowedPtrs(dest_ty, src_ty, dest_ptr_ty, src_ptr_ty, dest_is_mut, target);
+            return try sema.coerceInMemoryAllowedPtrs(dest_ty, src_ty, dest_ptr_ty, src_ptr_ty, dest_is_mut, target);
         }
     }
 
     // Slices
     if (dest_ty.isSlice() and src_ty.isSlice()) {
-        return coerceInMemoryAllowedPtrs(dest_ty, src_ty, dest_ty, src_ty, dest_is_mut, target);
+        return try sema.coerceInMemoryAllowedPtrs(dest_ty, src_ty, dest_ty, src_ty, dest_is_mut, target);
     }
 
+    const dest_tag = dest_ty.zigTypeTag();
+    const src_tag = src_ty.zigTypeTag();
+
     // Functions
-    if (dest_ty.zigTypeTag() == .Fn and src_ty.zigTypeTag() == .Fn) {
-        return coerceInMemoryAllowedFns(dest_ty, src_ty, target);
+    if (dest_tag == .Fn and src_tag == .Fn) {
+        return try sema.coerceInMemoryAllowedFns(dest_ty, src_ty, target);
     }
 
     // Error Unions
-    if (dest_ty.zigTypeTag() == .ErrorUnion and src_ty.zigTypeTag() == .ErrorUnion) {
-        const child = coerceInMemoryAllowed(dest_ty.errorUnionPayload(), src_ty.errorUnionPayload(), dest_is_mut, target);
+    if (dest_tag == .ErrorUnion and src_tag == .ErrorUnion) {
+        const child = try sema.coerceInMemoryAllowed(dest_ty.errorUnionPayload(), src_ty.errorUnionPayload(), dest_is_mut, target);
         if (child == .no_match) {
             return child;
         }
-        return coerceInMemoryAllowed(dest_ty.errorUnionSet(), src_ty.errorUnionSet(), dest_is_mut, target);
+        return try sema.coerceInMemoryAllowed(dest_ty.errorUnionSet(), src_ty.errorUnionSet(), dest_is_mut, target);
     }
 
     // Error Sets
-    if (dest_ty.zigTypeTag() == .ErrorSet and src_ty.zigTypeTag() == .ErrorSet) {
-        return coerceInMemoryAllowedErrorSets(dest_ty, src_ty);
+    if (dest_tag == .ErrorSet and src_tag == .ErrorSet) {
+        return try sema.coerceInMemoryAllowedErrorSets(dest_ty, src_ty);
     }
 
     // TODO: arrays
@@ -12512,38 +12499,145 @@ fn coerceInMemoryAllowed(dest_ty: Type, src_ty: Type, dest_is_mut: bool, target:
 }
 
 fn coerceInMemoryAllowedErrorSets(
+    sema: *Sema,
     dest_ty: Type,
     src_ty: Type,
-) InMemoryCoercionResult {
-    // Coercion to `anyerror`. Note that this check can return false positives
+) !InMemoryCoercionResult {
+    _ = sema;
+
+    // Coercion to `anyerror`. Note that this check can return false negatives
     // in case the error sets did not get resolved.
     if (dest_ty.isAnyError()) {
         return .ok;
     }
+
+    switch (src_ty.tag()) {
+        .error_set_inferred => {
+            const src_data = &src_ty.castTag(.error_set_inferred).?.data;
+
+            // If both are inferred error sets of functions, and
+            // the dest includes the source function, the coercion is OK.
+            // This check is important because it works without forcing a full resolution
+            // of inferred error sets.
+            if (dest_ty.castTag(.error_set_inferred)) |dest_pl| {
+                if (src_data.func == dest_pl.data.func or dest_pl.data.functions.contains(src_data.func)) {
+                    return .ok;
+                }
+
+                return .no_match;
+            }
+
+            try sema.resolveInferredErrorSet(src_ty);
+            // src anyerror status might have changed after the resolution.
+            if (src_ty.isAnyError()) {
+                // Need to resolve dest_ty to ensure that it anyerror status is ok.
+                try sema.resolveInferredErrorSet(dest_ty);
+                if (dest_ty.isAnyError()) {
+                    return .ok;
+                }
+
+                return .no_match;
+            }
+
+            var it = src_data.map.keyIterator();
+            while (it.next()) |name_ptr| {
+                if (!dest_ty.errorSetHasField(name_ptr.*)) {
+                    return .no_match;
+                }
+            }
+
+            return .ok;
+        },
+        .error_set_single => {
+            if (dest_ty.tag() == .error_set_inferred) {
+                try sema.resolveInferredErrorSet(dest_ty);
+            }
+
+            const name = src_ty.castTag(.error_set_single).?.data;
+            if (dest_ty.errorSetHasField(name)) {
+                return .ok;
+            }
+        },
+        .error_set_merged => {
+            if (dest_ty.tag() == .error_set_inferred) {
+                try sema.resolveInferredErrorSet(dest_ty);
+            }
+
+            const names = src_ty.castTag(.error_set_merged).?.data.keys();
+            for (names) |name| {
+                if (!dest_ty.errorSetHasField(name)) {
+                    return .no_match;
+                }
+            }
+
+            return .ok;
+        },
+        .error_set => {
+            if (dest_ty.tag() == .error_set_inferred) {
+                try sema.resolveInferredErrorSet(dest_ty);
+            }
+
+            const names = src_ty.castTag(.error_set).?.data.names.keys();
+            for (names) |name| {
+                if (!dest_ty.errorSetHasField(name)) {
+                    return .no_match;
+                }
+            }
+
+            return .ok;
+        },
+        .anyerror => switch (dest_ty.tag()) {
+            .error_set_inferred => {
+                try sema.resolveInferredErrorSet(dest_ty);
+                if (dest_ty.isAnyError()) {
+                    return .ok;
+                }
+            },
+            .error_set_single, .error_set_merged, .error_set => {},
+            .anyerror => unreachable, // Filtered out above.
+            else => unreachable,
+        },
+        else => unreachable,
+    }
+
     // If both are inferred error sets of functions, and
     // the dest includes the source function, the coercion is OK.
     // This check is important because it works without forcing a full resolution
     // of inferred error sets.
-    if (src_ty.castTag(.error_set_inferred)) |src_payload| {
-        if (dest_ty.castTag(.error_set_inferred)) |dst_payload| {
-            const src_func = src_payload.data.func;
-            const dst_func = dst_payload.data.func;
+    // if (src_ty.castTag(.error_set_inferred)) |src_payload| {
+    //     if (dest_ty.castTag(.error_set_inferred)) |dst_payload| {
+    //         const src_func = src_payload.data.func;
+    //         const dst_func = dst_payload.data.func;
 
-            if (src_func == dst_func or dst_payload.data.functions.contains(src_func)) {
-                return .ok;
-            }
-        }
-    }
+    //         if (src_func == dst_func or dst_payload.data.functions.contains(src_func)) {
+    //             return .ok;
+    //         }
+
+    //         // Resolve both sets and do a real coercion check.
+    //         try sema.resolveInferredErrorSet(dest_ty);
+    //     }
+
+    //     try sema.resolveInferredErrorSet(src_ty);
+    // }
+
+    // if (src_ty.castTag(.error_set_inferred) != null) {
+    //     try sema.resolveInferredErrorSet(src_ty);
+    // }
+
+    // if (dest_ty.castTag(.error_set_inferred) != null) {
+    //     try sema.resolveInferredErrorSet(dest_ty);
+    // }
 
     // TODO full error set resolution and compare sets by names.
     return .no_match;
 }
 
 fn coerceInMemoryAllowedFns(
+    sema: *Sema,
     dest_ty: Type,
     src_ty: Type,
     target: std.Target,
-) InMemoryCoercionResult {
+) !InMemoryCoercionResult {
     const dest_info = dest_ty.fnInfo();
     const src_info = src_ty.fnInfo();
 
@@ -12556,7 +12650,7 @@ fn coerceInMemoryAllowedFns(
     }
 
     if (!src_info.return_type.isNoReturn()) {
-        const rt = coerceInMemoryAllowed(dest_info.return_type, src_info.return_type, false, target);
+        const rt = try sema.coerceInMemoryAllowed(dest_info.return_type, src_info.return_type, false, target);
         if (rt == .no_match) {
             return rt;
         }
@@ -12576,7 +12670,7 @@ fn coerceInMemoryAllowedFns(
         // TODO: nolias
 
         // Note: Cast direction is reversed here.
-        const param = coerceInMemoryAllowed(src_param_ty, dest_param_ty, false, target);
+        const param = try sema.coerceInMemoryAllowed(src_param_ty, dest_param_ty, false, target);
         if (param == .no_match) {
             return param;
         }
@@ -12590,17 +12684,18 @@ fn coerceInMemoryAllowedFns(
 }
 
 fn coerceInMemoryAllowedPtrs(
+    sema: *Sema,
     dest_ty: Type,
     src_ty: Type,
     dest_ptr_ty: Type,
     src_ptr_ty: Type,
     dest_is_mut: bool,
     target: std.Target,
-) InMemoryCoercionResult {
+) !InMemoryCoercionResult {
     const dest_info = dest_ptr_ty.ptrInfo().data;
     const src_info = src_ptr_ty.ptrInfo().data;
 
-    const child = coerceInMemoryAllowed(dest_info.pointee_type, src_info.pointee_type, dest_info.mutable, target);
+    const child = try sema.coerceInMemoryAllowed(dest_info.pointee_type, src_info.pointee_type, dest_info.mutable, target);
     if (child == .no_match) {
         return child;
     }
@@ -13321,7 +13416,7 @@ fn coerceVectorInMemory(
     const target = sema.mod.getTarget();
     const dest_elem_ty = dest_ty.childType();
     const inst_elem_ty = inst_ty.childType();
-    const in_memory_result = coerceInMemoryAllowed(dest_elem_ty, inst_elem_ty, false, target);
+    const in_memory_result = try sema.coerceInMemoryAllowed(dest_elem_ty, inst_elem_ty, false, target);
     if (in_memory_result != .ok) {
         // TODO recursive error notes for coerceInMemoryAllowed failure
         return sema.fail(block, inst_src, "expected {}, found {}", .{ dest_ty, inst_ty });
@@ -13916,16 +14011,12 @@ fn wrapErrorUnion(
                 if (mem.eql(u8, expected_name, n)) break :ok;
                 return sema.failWithErrorSetCodeMissing(block, inst_src, dest_err_set_ty, inst_ty);
             },
-            .error_set => ok: {
+            .error_set => {
                 const expected_name = val.castTag(.@"error").?.data.name;
                 const error_set = dest_err_set_ty.castTag(.error_set).?.data;
-                const names = error_set.names_ptr[0..error_set.names_len];
-                // TODO this is O(N). I'm putting off solving this until we solve inferred
-                // error sets at the same time.
-                for (names) |name| {
-                    if (mem.eql(u8, expected_name, name)) break :ok;
+                if (!error_set.names.contains(expected_name)) {
+                    return sema.failWithErrorSetCodeMissing(block, inst_src, dest_err_set_ty, inst_ty);
                 }
-                return sema.failWithErrorSetCodeMissing(block, inst_src, dest_err_set_ty, inst_ty);
             },
             .error_set_inferred => ok: {
                 const err_set_payload = dest_err_set_ty.castTag(.error_set_inferred).?.data;
@@ -14077,12 +14168,12 @@ fn resolvePeerTypes(
             .Optional => {
                 var opt_child_buf: Type.Payload.ElemType = undefined;
                 const opt_child_ty = candidate_ty.optionalChild(&opt_child_buf);
-                if (coerceInMemoryAllowed(opt_child_ty, chosen_ty, false, target) == .ok) {
+                if ((try sema.coerceInMemoryAllowed(opt_child_ty, chosen_ty, false, target)) == .ok) {
                     chosen = candidate;
                     chosen_i = candidate_i + 1;
                     continue;
                 }
-                if (coerceInMemoryAllowed(chosen_ty, opt_child_ty, false, target) == .ok) {
+                if ((try sema.coerceInMemoryAllowed(chosen_ty, opt_child_ty, false, target)) == .ok) {
                     any_are_null = true;
                     continue;
                 }
@@ -14105,10 +14196,10 @@ fn resolvePeerTypes(
             .Optional => {
                 var opt_child_buf: Type.Payload.ElemType = undefined;
                 const opt_child_ty = chosen_ty.optionalChild(&opt_child_buf);
-                if (coerceInMemoryAllowed(opt_child_ty, candidate_ty, false, target) == .ok) {
+                if ((try sema.coerceInMemoryAllowed(opt_child_ty, candidate_ty, false, target)) == .ok) {
                     continue;
                 }
-                if (coerceInMemoryAllowed(candidate_ty, opt_child_ty, false, target) == .ok) {
+                if ((try sema.coerceInMemoryAllowed(candidate_ty, opt_child_ty, false, target)) == .ok) {
                     any_are_null = true;
                     chosen = candidate;
                     chosen_i = candidate_i + 1;
@@ -14272,6 +14363,44 @@ fn resolveBuiltinTypeFields(
 ) CompileError!Type {
     const resolved_ty = try sema.getBuiltinType(block, src, name);
     return sema.resolveTypeFields(block, src, resolved_ty);
+}
+
+fn resolveInferredErrorSet(
+    sema: *Sema,
+    error_set_ty: Type,
+) !void {
+    // Ensuring that a particular decl is analyzed does not neccesarily mean that
+    // it's error set is inferred, so traverse all of them to get the complete
+    // picture.
+    // Note: We want to skip re-resolving the current function, as recursion
+    // doesn't change the error set. We can just check for state == .in_progress for this.
+    // TODO: Is that correct?
+
+    const data = &error_set_ty.castTag(.error_set_inferred).?.data;
+    if (data.is_resolved) {
+        return;
+    }
+
+    var it = data.functions.keyIterator();
+    while (it.next()) |func| {
+        if (func.*.state == .in_progress) {
+            // Recursion, doesn't alter current error set, keep going.
+            continue;
+        }
+
+        const decl = func.*.owner_decl;
+        try sema.ensureDeclAnalyzed(decl);
+
+        const other_error_set_data = decl.ty.fnReturnType().errorUnionSet().castTag(.error_set_inferred).?.data;
+        assert(other_error_set_data.is_resolved);
+
+        var map_it = other_error_set_data.map.keyIterator();
+        while (map_it.next()) |entry| {
+            try data.map.put(sema.gpa, entry.*, {});
+        }
+    }
+
+    data.is_resolved = true;
 }
 
 fn semaStructFields(
@@ -15236,8 +15365,8 @@ fn pointerDeref(sema: *Sema, block: *Block, src: LazySrcLoc, ptr_val: Value, ptr
     // We have a Value that lines up in virtual memory exactly with what we want to load.
     // If the Type is in-memory coercable to `load_ty`, it may be returned without modifications.
     const coerce_in_mem_ok =
-        coerceInMemoryAllowed(load_ty, parent.ty, false, target) == .ok or
-        coerceInMemoryAllowed(parent.ty, load_ty, false, target) == .ok;
+        (try sema.coerceInMemoryAllowed(load_ty, parent.ty, false, target)) == .ok or
+        (try sema.coerceInMemoryAllowed(parent.ty, load_ty, false, target)) == .ok;
     if (coerce_in_mem_ok) {
         if (parent.is_mutable) {
             // The decl whose value we are obtaining here may be overwritten with
