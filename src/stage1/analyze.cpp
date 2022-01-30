@@ -1035,6 +1035,10 @@ const char *address_space_name(AddressSpace as) {
         case AddressSpaceParam: return "param";
         case AddressSpaceShared: return "shared";
         case AddressSpaceLocal: return "local";
+        case AddressSpaceFunction: return "function";
+        case AddressSpaceInput: return "input";
+        case AddressSpaceOutput: return "output";
+        case AddressSpaceUniform: return "uniform";
     }
     zig_unreachable();
 }

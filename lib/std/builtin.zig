@@ -168,12 +168,18 @@ pub const AddressSpace = enum {
     gs,
     fs,
     ss,
-    // GPU address spaces
+    // GPU address spaces.
+    shared,
+    local,
+    // SPIR-V specific spaces, in addition to GPU.
+    function,
+    input,
+    output,
+    uniform,
+        // NVPTX specific cases, in addition to GPU.
     global,
     constant,
     param,
-    shared,
-    local,
 };
 
 /// This data structure is used by the Zig language code generation and

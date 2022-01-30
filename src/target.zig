@@ -644,7 +644,10 @@ pub fn defaultAddressSpace(
 ) AddressSpace {
     _ = target;
     _ = context;
-    return .generic;
+    return switch (target.cpu.arch) {
+        .spirv32, .spirv64 => if (context == .local) std.builtin.AddressSpace.function else .local,
+        else => .generic,
+    };
 }
 
 /// Returns true if pointers in `from` can be converted to a pointer in `to`.
