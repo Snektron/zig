@@ -642,8 +642,6 @@ pub fn defaultAddressSpace(
         function,
     },
 ) AddressSpace {
-    _ = target;
-    _ = context;
     return switch (target.cpu.arch) {
         .spirv32, .spirv64 => if (context == .local) std.builtin.AddressSpace.function else .local,
         else => .generic,

@@ -167,11 +167,12 @@ pub fn updateDeclExports(
 }
 
 pub fn freeDecl(self: *SpirV, decl_index: Module.Decl.Index) void {
-    const index = self.decl_table.getIndex(decl_index).?;
-    const module = self.base.options.module.?;
-    const decl = module.declPtr(decl_index);
-    if (decl.val.tag() == .function) {
-        self.decl_table.values()[index].deinit(self.base.allocator);
+    if (self.decl_table.getIndex(decl_index)) |index| {
+        const module = self.base.options.module.?;
+        const decl = module.declPtr(decl_index);
+        if (decl.val.tag() == .function) {
+            self.decl_table.values()[index].deinit(self.base.allocator);
+        }
     }
 }
 
@@ -239,7 +240,9 @@ pub fn flushModule(self: *SpirV, comp: *Compilation, prog_node: *std.Progress.No
     try writeCapabilities(&spv, target);
     try writeMemoryModel(&spv, target);
 
-    try spv.flush(self.base.file.?);
+    if (self.base.file) |file| {
+        try spv.flush(file);
+    }
 }
 
 fn writeCapabilities(spv: *SpvModule, target: std.Target) !void {

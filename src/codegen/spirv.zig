@@ -325,13 +325,13 @@ pub const DeclGen = struct {
     /// TODO: Deduplication?
     fn genConstant(self: *DeclGen, ty: Type, val: Value) Error!IdRef {
         if (ty.zigTypeTag() == .Fn) {
-             const fn_decl = switch (val.tag()) {
-                 .extern_fn => val.castTag(.extern_fn).?.data.owner_decl,
-                 .function => val.castTag(.function).?.data.owner_decl,
-                 else => unreachable,
-             };
-             fn_decl.markAlive();
-             return fn_decl.fn_link.spirv.id.toRef();
+            const fn_decl = self.module.declPtr(switch (val.tag()) {
+                .extern_fn => val.castTag(.extern_fn).?.data.owner_decl,
+                .function => val.castTag(.function).?.data.owner_decl,
+                else => unreachable,
+            });
+            self.module.markDeclAlive(fn_decl);
+            return fn_decl.fn_link.spirv.id.toRef();
         }
 
         const target = self.getTarget();
@@ -761,7 +761,7 @@ pub const DeclGen = struct {
         var i: usize = 0;
         while (i < mask_len) : (i += 1) {
             var buf: Value.ElemValueBuffer = undefined;
-            const elem = mask.elemValueBuffer(i, &buf);
+            const elem = mask.elemValueBuffer(self.module, i, &buf);
             if (elem.isUndef()) {
                 self.func.body.writeOperand(spec.LiteralInteger, 0xFFFF_FFFF);
             } else {
@@ -1035,9 +1035,9 @@ pub const DeclGen = struct {
         const clobbers_len = @truncate(u31, extra.data.flags);
 
         var extra_i: usize = extra.end;
-        const outputs = @bitCast([]const Air.Inst.Ref, self.air.extra[extra_i..][0..extra.data.outputs_len]);
+        const outputs = @ptrCast([]const Air.Inst.Ref, self.air.extra[extra_i..][0..extra.data.outputs_len]);
         extra_i += outputs.len;
-        const inputs = @bitCast([]const Air.Inst.Ref, self.air.extra[extra_i..][0..extra.data.inputs_len]);
+        const inputs = @ptrCast([]const Air.Inst.Ref, self.air.extra[extra_i..][0..extra.data.inputs_len]);
         extra_i += inputs.len;
 
         if (outputs.len > 1) {
@@ -1090,7 +1090,7 @@ pub const DeclGen = struct {
             input_extra_i += constraint.len / 4 + 1;
 
             const value = try self.resolve(input);
-            try as.value_map.put(as.gpa, constraint, .{.value = value});
+            try as.value_map.put(as.gpa, constraint, .{ .value = value });
         }
 
         as.assemble() catch |err| switch (err) {
@@ -1101,7 +1101,7 @@ pub const DeclGen = struct {
                 // TODO: Translate proper error locations.
                 assert(as.errors.items.len != 0);
                 assert(self.error_msg == null);
-                const loc = LazySrcLoc{ .node_offset = 0 };
+                const loc = LazySrcLoc.nodeOffset(0);
                 const src_loc = loc.toSrcLoc(self.decl);
                 self.error_msg = try Module.ErrorMsg.create(self.module.gpa, src_loc, "failed to assemble SPIR-V inline assembly", .{});
                 const notes = try self.module.gpa.alloc(Module.ErrorMsg, as.errors.items.len);

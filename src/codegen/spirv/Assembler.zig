@@ -180,7 +180,7 @@ inst: struct {
     fn result(self: @This()) ?AsmValue.Ref {
         // The result, if present, is either the first or second
         // operand of an instruction.
-        for (self.operands.items[0..@minimum(self.operands.items.len, 2)]) |op| {
+        for (self.operands.items[0..@min(self.operands.items.len, 2)]) |op| {
             switch (op) {
                 .result_id => |index| return index,
                 else => {},
@@ -813,10 +813,7 @@ fn parseContextDependentFloat(self: *Assembler, comptime width: u16) !void {
     try self.expectToken(.value);
 
     const text = self.tokenText(tok);
-    const maybe_value = if (std.mem.startsWith(u8, text, "0x") or std.mem.startsWith(u8, text, "0X"))
-        std.fmt.parseHexFloat(Float, text)
-    else
-        std.fmt.parseFloat(Float, text);
+    const maybe_value = std.fmt.parseFloat(Float, text);
 
     const value = maybe_value catch {
         return self.fail(tok.start, "'{s}' is not a valid {}-bit float literal", .{ text, width });
