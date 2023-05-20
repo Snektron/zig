@@ -43,8 +43,7 @@ comptime {
                     @export(wWinMainCRTStartup2, .{ .name = "wWinMainCRTStartup" });
                 }
             } else if (builtin.os.tag == .opencl) {
-                if (@hasDecl(root, "main"))
-                    @export(spirvMain2, .{ .name = "main" });
+                // Exporting a main function makes no sense in a kernel.
             } else {
                 if (!@hasDecl(root, "_start")) {
                     @export(_start2, .{ .name = "_start" });
@@ -111,10 +110,6 @@ fn callMain2() noreturn {
     @setAlignStack(16);
     root.main();
     exit2(0);
-}
-
-fn spirvMain2() callconv(.Kernel) void {
-    root.main();
 }
 
 fn wWinMainCRTStartup2() callconv(.C) noreturn {
