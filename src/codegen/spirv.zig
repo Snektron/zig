@@ -1070,6 +1070,13 @@ pub const DeclGen = struct {
                 }
                 return result_id;
             },
+            .Enum => {
+                var int_ty_buffer: Type.Payload.Bits = undefined;
+                const int_ty = ty.intTagType(&int_ty_buffer);
+                var int_val_buffer: Value.Payload.U64 = undefined;
+                const int_val = val.enumToInt(ty, &int_val_buffer);
+                return try self.constant(int_ty, int_val, repr);
+            },
             .ErrorSet => {
                 const value = switch (val.tag()) {
                     .@"error" => blk: {
@@ -1098,8 +1105,10 @@ pub const DeclGen = struct {
                 var members: [2]IdRef = undefined;
                 if (eu_layout.error_first) {
                     members[0] = try self.constant(Type.anyerror, error_val, .indirect);
+                    // TODO: Fix
                     members[1] = try self.constant(payload_ty, payload_val, .indirect);
                 } else {
+                    // TODO: Fix
                     members[0] = try self.constant(payload_ty, payload_val, .indirect);
                     members[1] = try self.constant(Type.anyerror, error_val, .indirect);
                 }
