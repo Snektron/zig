@@ -14,6 +14,19 @@ var fba = std.heap.FixedBufferAllocator.init(&cmdline_buffer);
 pub fn main() void {
     if (builtin.zig_backend == .stage2_aarch64) {
         return mainSimple() catch @panic("test failure");
+    } else if (builtin.zig_backend == .stage2_spirv64) {
+        // The testing infrastructure uses function pointers to expose the tests via
+        // `builtin.test_functions`. However, these are currently not lowered for the SPIR-V
+        // backend.
+        //
+        // Instead, all testing functions are temporarily lowered to separate kernels, which
+        // the executor fetches directly from the SPIR-V module.
+        // This test runner must still be used in order to prevent Zig from using the default
+        // test runner.
+        //
+        // Note that the main function is not actually exported for spir-v, so this branch
+        // actually never be taken.
+        unreachable;
     }
 
     const args = std.process.argsAlloc(fba.allocator()) catch
