@@ -5942,6 +5942,23 @@ fn warnAboutForeignBinaries(
                 host_name, foreign_name, tip_suffix,
             });
         },
+        .spirv_executor => |spirv_executor| {
+            const host_name = try host_target_info.target.zigTriple(arena);
+            const foreign_name = try target_info.target.zigTriple(arena);
+            switch (arg_mode) {
+                .zig_test => warn(
+                    "the host system ({s}) does not appear to be capable of executing binaries " ++
+                        "from the target ({s}). Consider using '--test-cmd {s} --test-cmd-bin' " ++
+                        "to run the tests",
+                    .{ host_name, foreign_name, spirv_executor },
+                ),
+                else => warn(
+                    "the host system ({s}) does not appear to be capable of executing binaries " ++
+                        "from the target ({s}).",
+                    .{ host_name, foreign_name },
+                ),
+            }
+        },
     }
 }
 

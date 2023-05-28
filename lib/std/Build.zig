@@ -112,6 +112,9 @@ enable_rosetta: bool = false,
 enable_wasmtime: bool = false,
 /// Use system Wine installation to run cross compiled Windows build artifacts.
 enable_wine: bool = false,
+/// Experimental. Use system zig-spirv-executor installation to run spirv build artifacts.
+/// See https://github.com/Snektron/zig-spirv-test-runner
+enable_spirv_executor: bool = false,
 /// After following the steps in https://github.com/ziglang/zig/wiki/Updating-libc#glibc,
 /// this will be the directory $glibc-build-dir/install/glibcs
 /// Given the example of the aarch64 target, this is the directory
@@ -348,6 +351,7 @@ fn createChildOnly(parent: *Build, dep_name: []const u8, build_root: Cache.Direc
         .enable_rosetta = parent.enable_rosetta,
         .enable_wasmtime = parent.enable_wasmtime,
         .enable_wine = parent.enable_wine,
+        .enable_spirv_executor = parent.enable_spirv_executor,
         .glibc_runtimes_dir = parent.glibc_runtimes_dir,
         .host = parent.host,
         .dep_prefix = parent.fmt("{s}{s}.", .{ parent.dep_prefix, dep_name }),

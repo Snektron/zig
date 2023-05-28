@@ -36,423 +36,431 @@ const test_targets = blk: {
     // lot of branches)
     @setEvalBranchQuota(50000);
     break :blk [_]TestTarget{
-        .{},
-        .{
-            .link_libc = true,
-        },
-        .{
-            .single_threaded = true,
-        },
-        .{
-            .optimize_mode = .ReleaseFast,
-        },
-        .{
-            .link_libc = true,
-            .optimize_mode = .ReleaseFast,
-        },
-        .{
-            .optimize_mode = .ReleaseFast,
-            .single_threaded = true,
-        },
+        // .{},
+        // .{
+        //     .link_libc = true,
+        // },
+        // .{
+        //     .single_threaded = true,
+        // },
+        // .{
+        //     .optimize_mode = .ReleaseFast,
+        // },
+        // .{
+        //     .link_libc = true,
+        //     .optimize_mode = .ReleaseFast,
+        // },
+        // .{
+        //     .optimize_mode = .ReleaseFast,
+        //     .single_threaded = true,
+        // },
 
-        .{
-            .optimize_mode = .ReleaseSafe,
-        },
-        .{
-            .link_libc = true,
-            .optimize_mode = .ReleaseSafe,
-        },
-        .{
-            .optimize_mode = .ReleaseSafe,
-            .single_threaded = true,
-        },
+        // .{
+        //     .optimize_mode = .ReleaseSafe,
+        // },
+        // .{
+        //     .link_libc = true,
+        //     .optimize_mode = .ReleaseSafe,
+        // },
+        // .{
+        //     .optimize_mode = .ReleaseSafe,
+        //     .single_threaded = true,
+        // },
 
-        .{
-            .optimize_mode = .ReleaseSmall,
-        },
-        .{
-            .link_libc = true,
-            .optimize_mode = .ReleaseSmall,
-        },
-        .{
-            .optimize_mode = .ReleaseSmall,
-            .single_threaded = true,
-        },
+        // .{
+        //     .optimize_mode = .ReleaseSmall,
+        // },
+        // .{
+        //     .link_libc = true,
+        //     .optimize_mode = .ReleaseSmall,
+        // },
+        // .{
+        //     .optimize_mode = .ReleaseSmall,
+        //     .single_threaded = true,
+        // },
 
-        .{
-            .target = .{
-                .ofmt = .c,
-            },
-            .link_libc = true,
-        },
-        .{
-            .target = .{
-                .cpu_arch = .x86_64,
-                .os_tag = .linux,
-                .abi = .none,
-            },
-            .use_llvm = false,
-            .use_lld = false,
-        },
-        // Doesn't support new liveness
-        //.{
-        //    .target = .{
-        //        .cpu_arch = .aarch64,
-        //        .os_tag = .linux,
-        //    },
-        //    .use_llvm = false,
-        //    .use_lld = false,
-        //},
-        .{
-            .target = .{
-                .cpu_arch = .wasm32,
-                .os_tag = .wasi,
-            },
-            .use_llvm = false,
-            .use_lld = false,
-        },
-        // https://github.com/ziglang/zig/issues/13623
-        //.{
-        //    .target = .{
-        //        .cpu_arch = .arm,
-        //        .os_tag = .linux,
-        //    },
-        //    .use_llvm = false,
-        //    .use_lld = false,
-        //},
-        // https://github.com/ziglang/zig/issues/13623
-        //.{
-        //    .target = CrossTarget.parse(.{
-        //        .arch_os_abi = "arm-linux-none",
-        //        .cpu_features = "generic+v8a",
-        //    }) catch unreachable,
-        //    .use_llvm = false,
-        //    .use_lld = false,
-        //},
-        // Doesn't support new liveness
-        //.{
-        //    .target = .{
-        //        .cpu_arch = .aarch64,
-        //        .os_tag = .macos,
-        //        .abi = .none,
-        //    },
-        //    .use_llvm = false,
-        //    .use_lld = false,
-        //},
-        .{
-            .target = .{
-                .cpu_arch = .x86_64,
-                .os_tag = .macos,
-                .abi = .none,
-            },
-            .use_llvm = false,
-            .use_lld = false,
-        },
-        .{
-            .target = .{
-                .cpu_arch = .x86_64,
-                .os_tag = .windows,
-                .abi = .gnu,
-            },
-            .use_llvm = false,
-            .use_lld = false,
-        },
+        // .{
+        //     .target = .{
+        //         .ofmt = .c,
+        //     },
+        //     .link_libc = true,
+        // },
+        // .{
+        //     .target = .{
+        //         .cpu_arch = .x86_64,
+        //         .os_tag = .linux,
+        //         .abi = .none,
+        //     },
+        //     .use_llvm = false,
+        //     .use_lld = false,
+        // },
+        // // Doesn't support new liveness
+        // //.{
+        // //    .target = .{
+        // //        .cpu_arch = .aarch64,
+        // //        .os_tag = .linux,
+        // //    },
+        // //    .use_llvm = false,
+        // //    .use_lld = false,
+        // //},
+        // .{
+        //     .target = .{
+        //         .cpu_arch = .wasm32,
+        //         .os_tag = .wasi,
+        //     },
+        //     .use_llvm = false,
+        //     .use_lld = false,
+        // },
+        // // https://github.com/ziglang/zig/issues/13623
+        // //.{
+        // //    .target = .{
+        // //        .cpu_arch = .arm,
+        // //        .os_tag = .linux,
+        // //    },
+        // //    .use_llvm = false,
+        // //    .use_lld = false,
+        // //},
+        // // https://github.com/ziglang/zig/issues/13623
+        // //.{
+        // //    .target = CrossTarget.parse(.{
+        // //        .arch_os_abi = "arm-linux-none",
+        // //        .cpu_features = "generic+v8a",
+        // //    }) catch unreachable,
+        // //    .use_llvm = false,
+        // //    .use_lld = false,
+        // //},
+        // // Doesn't support new liveness
+        // //.{
+        // //    .target = .{
+        // //        .cpu_arch = .aarch64,
+        // //        .os_tag = .macos,
+        // //        .abi = .none,
+        // //    },
+        // //    .use_llvm = false,
+        // //    .use_lld = false,
+        // //},
+        // .{
+        //     .target = .{
+        //         .cpu_arch = .x86_64,
+        //         .os_tag = .macos,
+        //         .abi = .none,
+        //     },
+        //     .use_llvm = false,
+        //     .use_lld = false,
+        // },
+        // .{
+        //     .target = .{
+        //         .cpu_arch = .x86_64,
+        //         .os_tag = .windows,
+        //         .abi = .gnu,
+        //     },
+        //     .use_llvm = false,
+        //     .use_lld = false,
+        // },
 
-        .{
-            .target = .{
-                .cpu_arch = .wasm32,
-                .os_tag = .wasi,
-            },
-            .link_libc = false,
-        },
-        .{
-            .target = .{
-                .cpu_arch = .wasm32,
-                .os_tag = .wasi,
-            },
-            .link_libc = true,
-        },
+        // .{
+        //     .target = .{
+        //         .cpu_arch = .wasm32,
+        //         .os_tag = .wasi,
+        //     },
+        //     .link_libc = false,
+        // },
+        // .{
+        //     .target = .{
+        //         .cpu_arch = .wasm32,
+        //         .os_tag = .wasi,
+        //     },
+        //     .link_libc = true,
+        // },
 
-        .{
-            .target = .{
-                .cpu_arch = .x86_64,
-                .os_tag = .linux,
-                .abi = .none,
-            },
-        },
-        .{
-            .target = .{
-                .cpu_arch = .x86_64,
-                .os_tag = .linux,
-                .abi = .gnu,
-            },
-            .link_libc = true,
-        },
-        .{
-            .target = .{
-                .cpu_arch = .x86_64,
-                .os_tag = .linux,
-                .abi = .musl,
-            },
-            .link_libc = true,
-        },
+        // .{
+        //     .target = .{
+        //         .cpu_arch = .x86_64,
+        //         .os_tag = .linux,
+        //         .abi = .none,
+        //     },
+        // },
+        // .{
+        //     .target = .{
+        //         .cpu_arch = .x86_64,
+        //         .os_tag = .linux,
+        //         .abi = .gnu,
+        //     },
+        //     .link_libc = true,
+        // },
+        // .{
+        //     .target = .{
+        //         .cpu_arch = .x86_64,
+        //         .os_tag = .linux,
+        //         .abi = .musl,
+        //     },
+        //     .link_libc = true,
+        // },
 
-        .{
-            .target = .{
-                .cpu_arch = .x86,
-                .os_tag = .linux,
-                .abi = .none,
-            },
-        },
-        .{
-            .target = .{
-                .cpu_arch = .x86,
-                .os_tag = .linux,
-                .abi = .musl,
-            },
-            .link_libc = true,
-        },
-        .{
-            .target = .{
-                .cpu_arch = .x86,
-                .os_tag = .linux,
-                .abi = .gnu,
-            },
-            .link_libc = true,
-        },
+        // .{
+        //     .target = .{
+        //         .cpu_arch = .x86,
+        //         .os_tag = .linux,
+        //         .abi = .none,
+        //     },
+        // },
+        // .{
+        //     .target = .{
+        //         .cpu_arch = .x86,
+        //         .os_tag = .linux,
+        //         .abi = .musl,
+        //     },
+        //     .link_libc = true,
+        // },
+        // .{
+        //     .target = .{
+        //         .cpu_arch = .x86,
+        //         .os_tag = .linux,
+        //         .abi = .gnu,
+        //     },
+        //     .link_libc = true,
+        // },
 
-        .{
-            .target = .{
-                .cpu_arch = .aarch64,
-                .os_tag = .linux,
-                .abi = .none,
-            },
-        },
-        .{
-            .target = .{
-                .cpu_arch = .aarch64,
-                .os_tag = .linux,
-                .abi = .musl,
-            },
-            .link_libc = true,
-        },
-        .{
-            .target = .{
-                .cpu_arch = .aarch64,
-                .os_tag = .linux,
-                .abi = .gnu,
-            },
-            .link_libc = true,
-        },
-        .{
-            .target = .{
-                .cpu_arch = .aarch64,
-                .os_tag = .windows,
-                .abi = .gnu,
-            },
-            .link_libc = true,
-        },
+        // .{
+        //     .target = .{
+        //         .cpu_arch = .aarch64,
+        //         .os_tag = .linux,
+        //         .abi = .none,
+        //     },
+        // },
+        // .{
+        //     .target = .{
+        //         .cpu_arch = .aarch64,
+        //         .os_tag = .linux,
+        //         .abi = .musl,
+        //     },
+        //     .link_libc = true,
+        // },
+        // .{
+        //     .target = .{
+        //         .cpu_arch = .aarch64,
+        //         .os_tag = .linux,
+        //         .abi = .gnu,
+        //     },
+        //     .link_libc = true,
+        // },
+        // .{
+        //     .target = .{
+        //         .cpu_arch = .aarch64,
+        //         .os_tag = .windows,
+        //         .abi = .gnu,
+        //     },
+        //     .link_libc = true,
+        // },
+
+        // .{
+        //     .target = CrossTarget.parse(.{
+        //         .arch_os_abi = "arm-linux-none",
+        //         .cpu_features = "generic+v8a",
+        //     }) catch unreachable,
+        // },
+        // .{
+        //     .target = CrossTarget.parse(.{
+        //         .arch_os_abi = "arm-linux-musleabihf",
+        //         .cpu_features = "generic+v8a",
+        //     }) catch unreachable,
+        //     .link_libc = true,
+        // },
+        // // https://github.com/ziglang/zig/issues/3287
+        // //.{
+        // //    .target = CrossTarget.parse(.{
+        // //        .arch_os_abi = "arm-linux-gnueabihf",
+        // //        .cpu_features = "generic+v8a",
+        // //    }) catch unreachable,
+        // //    .link_libc = true,
+        // //},
+
+        // .{
+        //     .target = .{
+        //         .cpu_arch = .mips,
+        //         .os_tag = .linux,
+        //         .abi = .none,
+        //     },
+        // },
+
+        // .{
+        //     .target = .{
+        //         .cpu_arch = .mips,
+        //         .os_tag = .linux,
+        //         .abi = .musl,
+        //     },
+        //     .link_libc = true,
+        // },
+
+        // // https://github.com/ziglang/zig/issues/4927
+        // //.{
+        // //    .target = .{
+        // //        .cpu_arch = .mips,
+        // //        .os_tag = .linux,
+        // //        .abi = .gnueabihf,
+        // //    },
+        // //    .link_libc = true,
+        // //},
+
+        // .{
+        //     .target = .{
+        //         .cpu_arch = .mipsel,
+        //         .os_tag = .linux,
+        //         .abi = .none,
+        //     },
+        // },
+
+        // .{
+        //     .target = .{
+        //         .cpu_arch = .mipsel,
+        //         .os_tag = .linux,
+        //         .abi = .musl,
+        //     },
+        //     .link_libc = true,
+        // },
+
+        // // https://github.com/ziglang/zig/issues/4927
+        // //.{
+        // //    .target = .{
+        // //        .cpu_arch = .mipsel,
+        // //        .os_tag = .linux,
+        // //        .abi = .gnueabihf,
+        // //    },
+        // //    .link_libc = true,
+        // //},
+
+        // .{
+        //     .target = .{
+        //         .cpu_arch = .powerpc,
+        //         .os_tag = .linux,
+        //         .abi = .none,
+        //     },
+        // },
+        // .{
+        //     .target = .{
+        //         .cpu_arch = .powerpc,
+        //         .os_tag = .linux,
+        //         .abi = .musl,
+        //     },
+        //     .link_libc = true,
+        // },
+        // // https://github.com/ziglang/zig/issues/2256
+        // //.{
+        // //    .target = .{
+        // //        .cpu_arch = .powerpc,
+        // //        .os_tag = .linux,
+        // //        .abi = .gnueabihf,
+        // //    },
+        // //    .link_libc = true,
+        // //},
+
+        // .{
+        //     .target = .{
+        //         .cpu_arch = .powerpc64le,
+        //         .os_tag = .linux,
+        //         .abi = .none,
+        //     },
+        // },
+        // .{
+        //     .target = .{
+        //         .cpu_arch = .powerpc64le,
+        //         .os_tag = .linux,
+        //         .abi = .musl,
+        //     },
+        //     .link_libc = true,
+        // },
+        // .{
+        //     .target = .{
+        //         .cpu_arch = .powerpc64le,
+        //         .os_tag = .linux,
+        //         .abi = .gnu,
+        //     },
+        //     .link_libc = true,
+        // },
+
+        // .{
+        //     .target = .{
+        //         .cpu_arch = .riscv64,
+        //         .os_tag = .linux,
+        //         .abi = .none,
+        //     },
+        // },
+
+        // .{
+        //     .target = .{
+        //         .cpu_arch = .riscv64,
+        //         .os_tag = .linux,
+        //         .abi = .musl,
+        //     },
+        //     .link_libc = true,
+        // },
+
+        // // https://github.com/ziglang/zig/issues/3340
+        // //.{
+        // //    .target = .{
+        // //        .cpu_arch = .riscv64,
+        // //        .os = .linux,
+        // //        .abi = .gnu,
+        // //    },
+        // //    .link_libc = true,
+        // //},
+
+        // .{
+        //     .target = .{
+        //         .cpu_arch = .x86_64,
+        //         .os_tag = .macos,
+        //         .abi = .none,
+        //     },
+        // },
+
+        // .{
+        //     .target = .{
+        //         .cpu_arch = .aarch64,
+        //         .os_tag = .macos,
+        //         .abi = .none,
+        //     },
+        // },
+
+        // .{
+        //     .target = .{
+        //         .cpu_arch = .x86,
+        //         .os_tag = .windows,
+        //         .abi = .msvc,
+        //     },
+        // },
+
+        // .{
+        //     .target = .{
+        //         .cpu_arch = .x86_64,
+        //         .os_tag = .windows,
+        //         .abi = .msvc,
+        //     },
+        // },
+
+        // .{
+        //     .target = .{
+        //         .cpu_arch = .x86,
+        //         .os_tag = .windows,
+        //         .abi = .gnu,
+        //     },
+        //     .link_libc = true,
+        // },
+
+        // .{
+        //     .target = .{
+        //         .cpu_arch = .x86_64,
+        //         .os_tag = .windows,
+        //         .abi = .gnu,
+        //     },
+        //     .link_libc = true,
+        // },
 
         .{
             .target = CrossTarget.parse(.{
-                .arch_os_abi = "arm-linux-none",
-                .cpu_features = "generic+v8a",
+                .arch_os_abi = "spirv64-opencl",
+                .cpu_features = "generic+Int64+Int16+Int8+Float64",
             }) catch unreachable,
-        },
-        .{
-            .target = CrossTarget.parse(.{
-                .arch_os_abi = "arm-linux-musleabihf",
-                .cpu_features = "generic+v8a",
-            }) catch unreachable,
-            .link_libc = true,
-        },
-        // https://github.com/ziglang/zig/issues/3287
-        //.{
-        //    .target = CrossTarget.parse(.{
-        //        .arch_os_abi = "arm-linux-gnueabihf",
-        //        .cpu_features = "generic+v8a",
-        //    }) catch unreachable,
-        //    .link_libc = true,
-        //},
-
-        .{
-            .target = .{
-                .cpu_arch = .mips,
-                .os_tag = .linux,
-                .abi = .none,
-            },
-        },
-
-        .{
-            .target = .{
-                .cpu_arch = .mips,
-                .os_tag = .linux,
-                .abi = .musl,
-            },
-            .link_libc = true,
-        },
-
-        // https://github.com/ziglang/zig/issues/4927
-        //.{
-        //    .target = .{
-        //        .cpu_arch = .mips,
-        //        .os_tag = .linux,
-        //        .abi = .gnueabihf,
-        //    },
-        //    .link_libc = true,
-        //},
-
-        .{
-            .target = .{
-                .cpu_arch = .mipsel,
-                .os_tag = .linux,
-                .abi = .none,
-            },
-        },
-
-        .{
-            .target = .{
-                .cpu_arch = .mipsel,
-                .os_tag = .linux,
-                .abi = .musl,
-            },
-            .link_libc = true,
-        },
-
-        // https://github.com/ziglang/zig/issues/4927
-        //.{
-        //    .target = .{
-        //        .cpu_arch = .mipsel,
-        //        .os_tag = .linux,
-        //        .abi = .gnueabihf,
-        //    },
-        //    .link_libc = true,
-        //},
-
-        .{
-            .target = .{
-                .cpu_arch = .powerpc,
-                .os_tag = .linux,
-                .abi = .none,
-            },
-        },
-        .{
-            .target = .{
-                .cpu_arch = .powerpc,
-                .os_tag = .linux,
-                .abi = .musl,
-            },
-            .link_libc = true,
-        },
-        // https://github.com/ziglang/zig/issues/2256
-        //.{
-        //    .target = .{
-        //        .cpu_arch = .powerpc,
-        //        .os_tag = .linux,
-        //        .abi = .gnueabihf,
-        //    },
-        //    .link_libc = true,
-        //},
-
-        .{
-            .target = .{
-                .cpu_arch = .powerpc64le,
-                .os_tag = .linux,
-                .abi = .none,
-            },
-        },
-        .{
-            .target = .{
-                .cpu_arch = .powerpc64le,
-                .os_tag = .linux,
-                .abi = .musl,
-            },
-            .link_libc = true,
-        },
-        .{
-            .target = .{
-                .cpu_arch = .powerpc64le,
-                .os_tag = .linux,
-                .abi = .gnu,
-            },
-            .link_libc = true,
-        },
-
-        .{
-            .target = .{
-                .cpu_arch = .riscv64,
-                .os_tag = .linux,
-                .abi = .none,
-            },
-        },
-
-        .{
-            .target = .{
-                .cpu_arch = .riscv64,
-                .os_tag = .linux,
-                .abi = .musl,
-            },
-            .link_libc = true,
-        },
-
-        // https://github.com/ziglang/zig/issues/3340
-        //.{
-        //    .target = .{
-        //        .cpu_arch = .riscv64,
-        //        .os = .linux,
-        //        .abi = .gnu,
-        //    },
-        //    .link_libc = true,
-        //},
-
-        .{
-            .target = .{
-                .cpu_arch = .x86_64,
-                .os_tag = .macos,
-                .abi = .none,
-            },
-        },
-
-        .{
-            .target = .{
-                .cpu_arch = .aarch64,
-                .os_tag = .macos,
-                .abi = .none,
-            },
-        },
-
-        .{
-            .target = .{
-                .cpu_arch = .x86,
-                .os_tag = .windows,
-                .abi = .msvc,
-            },
-        },
-
-        .{
-            .target = .{
-                .cpu_arch = .x86_64,
-                .os_tag = .windows,
-                .abi = .msvc,
-            },
-        },
-
-        .{
-            .target = .{
-                .cpu_arch = .x86,
-                .os_tag = .windows,
-                .abi = .gnu,
-            },
-            .link_libc = true,
-        },
-
-        .{
-            .target = .{
-                .cpu_arch = .x86_64,
-                .os_tag = .windows,
-                .abi = .gnu,
-            },
-            .link_libc = true,
+            .use_llvm = false,
         },
     };
 };

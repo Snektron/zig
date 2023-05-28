@@ -995,6 +995,7 @@ pub const Executor = union(enum) {
     darling: []const u8,
     bad_dl: []const u8,
     bad_os_or_cpu,
+    spirv_executor: []const u8,
 };
 
 pub const GetExternalExecutorOptions = struct {
@@ -1003,6 +1004,7 @@ pub const GetExternalExecutorOptions = struct {
     allow_rosetta: bool = true,
     allow_wasmtime: bool = true,
     allow_wine: bool = true,
+    allow_spirv_executor: bool = true,
     qemu_fixes_dl: bool = false,
     link_libc: bool = false,
 };
@@ -1121,6 +1123,12 @@ pub fn getExternalExecutor(
                     return bad_result;
                 }
                 return Executor{ .darling = "darling" };
+            }
+            return bad_result;
+        },
+        .opencl => {
+            if (options.allow_spirv_executor and candidate.target.cpu.arch.isSpirV()) {
+                return Executor{ .spirv_executor = "zig-spirv-executor" };
             }
             return bad_result;
         },

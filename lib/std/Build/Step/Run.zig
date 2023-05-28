@@ -563,7 +563,7 @@ fn runCommand(
     const result = spawnChildAndCollect(self, argv, has_side_effects, prog_node) catch |err| term: {
         // InvalidExe: cpu arch mismatch
         // FileNotFound: can happen with a wrong dynamic linker path
-        if (err == error.InvalidExe or err == error.FileNotFound) interpret: {
+        if (err == error.AccessDenied or err == error.InvalidExe or err == error.FileNotFound) interpret: {
             // TODO: learn the target from the binary directly rather than from
             // relying on it being a Compile step. This will make this logic
             // work even for the edge case that the binary was produced by a
@@ -669,6 +669,19 @@ fn runCommand(
                     return step.fail("the host system ({s}) is unable to execute binaries from the target ({s})", .{
                         host_name, foreign_name,
                     });
+                },
+                .spirv_executor => |bin_name| {
+                    const host_name = try b.host.target.zigTriple(b.allocator);
+                    const foreign_name = try exe.target.zigTriple(b.allocator);
+
+                    if (self.stdio == .zig_test and b.enable_spirv_executor) {
+                        try interp_argv.append(bin_name);
+                        try interp_argv.append(argv[0]);
+                    } else {
+                        return step.fail("the host system ({s}) is unable to execute binaries from the target ({s}), and {s} can only run tests", .{
+                            host_name, foreign_name, bin_name,
+                        });
+                    }
                 },
             }
 

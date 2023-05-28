@@ -234,6 +234,10 @@ pub fn main() !void {
                 builder.enable_darling = true;
             } else if (mem.eql(u8, arg, "-fno-darling")) {
                 builder.enable_darling = false;
+            } else if (mem.eql(u8, arg, "-fspirv")) {
+                builder.enable_spirv_executor = true;
+            } else if (mem.eql(u8, arg, "-fno-spirv")) {
+                builder.enable_spirv_executor = false;
             } else if (mem.eql(u8, arg, "-fsummary")) {
                 enable_summary = true;
             } else if (mem.eql(u8, arg, "-fno-summary")) {
@@ -943,6 +947,8 @@ fn usage(builder: *std.Build, already_ran_build: bool, out_stream: anytype) !voi
         \\                               execute WASI binaries. (default: no)
         \\  -fwine,     -fno-wine        Integration with system-installed Wine to execute
         \\                               Windows programs on Linux hosts. (default: no)
+        \\  -fspirv,    -fno-spirv       Integration with system-installed zig-spirv-executor
+        \\                               to execute spirv tests. (default: no)
         \\
         \\  -h, --help                   Print this help and exit
         \\  -l, --list-steps             Print available steps
