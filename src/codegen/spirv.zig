@@ -1174,6 +1174,14 @@ pub const DeclGen = struct {
         }
     }
 
+    // Turn a Zig type's name into a cache reference.
+    fn resolveTypeName(self: *DeclGen, ty: Type) !CacheString {
+        var name = std.ArrayList(u8).init(self.gpa);
+        defer name.deinit();
+        try ty.print(name.writer(), self.module);
+        return try self.spv.resolveString(name.items);
+    }
+
     /// Turn a Zig type into a SPIR-V Type, and return its type result-id.
     fn resolveTypeId(self: *DeclGen, ty: Type) !IdResultType {
         const type_ref = try self.resolveType(ty, .direct);
@@ -1285,6 +1293,7 @@ pub const DeclGen = struct {
         }
 
         const ty_ref = try self.spv.resolve(.{ .struct_type = .{
+            .name = try self.resolveTypeName(ty),
             .member_types = member_types.slice(),
             .member_names = member_names.slice(),
         } });
@@ -1439,6 +1448,7 @@ pub const DeclGen = struct {
                         }
 
                         const ty_ref = try self.spv.resolve(.{ .struct_type = .{
+                            .name = try self.resolveTypeName(ty),
                             .member_types = member_types[0..member_index],
                         } });
 
@@ -1475,10 +1485,8 @@ pub const DeclGen = struct {
                     try member_names.append(try self.spv.resolveString(field_name));
                 }
 
-                const name = ip.stringToSlice(try struct_obj.getFullyQualifiedName(self.module));
-
                 const ty_ref = try self.spv.resolve(.{ .struct_type = .{
-                    .name = try self.spv.resolveString(name),
+                    .name = try self.resolveTypeName(ty),
                     .member_types = member_types.items,
                     .member_names = member_names.items,
                 } });
@@ -1558,6 +1566,7 @@ pub const DeclGen = struct {
                 }
 
                 const ty_ref = try self.spv.resolve(.{ .struct_type = .{
+                    .name = try self.resolveTypeName(ty),
                     .member_types = &member_types,
                     .member_names = &member_names,
                 } });
