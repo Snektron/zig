@@ -1681,9 +1681,9 @@ pub const DeclGen = struct {
 
             .bitcast         => try self.airBitCast(inst),
             .intcast, .trunc => try self.airIntCast(inst),
-            .int_from_ptr        => try self.airIntFromPtr(inst),
-            .float_from_int    => try self.airFloatFromInt(inst),
-            .int_from_float    => try self.airIntFromFloat(inst),
+            .int_from_ptr    => try self.airIntFromPtr(inst),
+            .float_from_int  => try self.airFloatFromInt(inst),
+            .int_from_float  => try self.airIntFromFloat(inst),
             .not             => try self.airNot(inst),
 
             .array_to_slice => try self.airArrayToSlice(inst),
