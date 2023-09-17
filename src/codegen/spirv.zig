@@ -947,9 +947,10 @@ pub const DeclGen = struct {
             return try self.resolveType(union_obj.enum_tag_ty.toType(), .indirect);
         }
 
-        // TODO: We need to add the active field to the key.
-        // const entry = try self.type_map.getOrPut(self.gpa, ty.toIntern());
-        // if (entry.found_existing) return entry.value_ptr.ty_ref;
+        // TODO: We need to add the active field to the key, somehow.
+        if (maybe_active_field == null) {
+            if (self.type_map.get(ty.toIntern())) |info| return info.ty_ref;
+        }
 
         var member_types: [4]CacheRef = undefined;
         var member_names: [4]CacheString = undefined;
@@ -986,10 +987,9 @@ pub const DeclGen = struct {
             .member_names = member_names[0..layout.total_fields],
         } });
 
-        // entry.value_ptr.* = .{
-        //     .ty_ref = ty_ref,
-        // };
-
+        if (maybe_active_field == null) {
+            try self.type_map.put(self.gpa, ty.toIntern(), .{ .ty_ref = ty_ref });
+        }
         return ty_ref;
     }
 
@@ -1033,8 +1033,7 @@ pub const DeclGen = struct {
                 return try self.spv.resolve(.{ .float_type = .{ .bits = bits } });
             },
             .Array => {
-                const entry = try self.type_map.getOrPut(self.gpa, ty.toIntern());
-                if (entry.found_existing) return entry.value_ptr.ty_ref;
+                if (self.type_map.get(ty.toIntern())) |info| return info.ty_ref;
 
                 const elem_ty = ty.childType(mod);
                 const elem_ty_ref = try self.resolveType(elem_ty, .indirect);
@@ -1042,15 +1041,12 @@ pub const DeclGen = struct {
                     return self.fail("array type of {} elements is too large", .{ty.arrayLenIncludingSentinel(mod)});
                 };
                 const ty_ref = try self.spv.arrayType(total_len, elem_ty_ref);
-                entry.value_ptr.* = .{
-                    .ty_ref = ty_ref,
-                };
+                try self.type_map.put(self.gpa, ty.toIntern(), .{ .ty_ref = ty_ref });
                 return ty_ref;
             },
             .Fn => switch (repr) {
                 .direct => {
-                    const entry = try self.type_map.getOrPut(self.gpa, ty.toIntern());
-                    if (entry.found_existing) return entry.value_ptr.ty_ref;
+                    if (self.type_map.get(ty.toIntern())) |info| return info.ty_ref;
 
                     const fn_info = mod.typeToFunc(ty).?;
                     // TODO: Put this somewhere in Sema.zig
@@ -1069,10 +1065,7 @@ pub const DeclGen = struct {
                         .parameters = param_ty_refs,
                     } });
 
-                    entry.value_ptr.* = .{
-                        .ty_ref = ty_ref,
-                    };
-
+                    try self.type_map.put(self.gpa, ty.toIntern(), .{ .ty_ref = ty_ref });
                     return ty_ref;
                 },
                 .indirect => {
@@ -1119,8 +1112,7 @@ pub const DeclGen = struct {
                 } });
             },
             .Struct => {
-                const entry = try self.type_map.getOrPut(self.gpa, ty.toIntern());
-                if (entry.found_existing) return entry.value_ptr.ty_ref;
+                if (self.type_map.get(ty.toIntern())) |info| return info.ty_ref;
 
                 const struct_ty = switch (ip.indexToKey(ty.toIntern())) {
                     .anon_struct_type => |tuple| {
@@ -1140,9 +1132,7 @@ pub const DeclGen = struct {
                             .member_types = member_types[0..member_index],
                         } });
 
-                        entry.value_ptr.* = .{
-                            .ty_ref = ty_ref,
-                        };
+                        try self.type_map.put(self.gpa, ty.toIntern(), .{ .ty_ref = ty_ref });
                         return ty_ref;
                     },
                     .struct_type => |struct_ty| struct_ty,
@@ -1152,9 +1142,7 @@ pub const DeclGen = struct {
                 const struct_obj = mod.structPtrUnwrap(struct_ty.index).?;
                 if (struct_obj.layout == .Packed) {
                     const ty_ref = try self.resolveType(struct_obj.backing_int_ty, .indirect);
-                    entry.value_ptr.* = .{
-                        .ty_ref = ty_ref,
-                    };
+                    try self.type_map.put(self.gpa, ty.toIntern(), .{ .ty_ref = ty_ref });
                     return ty_ref;
                 }
 
@@ -1180,9 +1168,7 @@ pub const DeclGen = struct {
                     .member_names = member_names.items,
                 } });
 
-                entry.value_ptr.* = .{
-                    .ty_ref = ty_ref,
-                };
+                try self.type_map.put(self.gpa, ty.toIntern(), .{ .ty_ref = ty_ref });
                 return ty_ref;
             },
             .Optional => {
@@ -1200,8 +1186,7 @@ pub const DeclGen = struct {
                     return payload_ty_ref;
                 }
 
-                const entry = try self.type_map.getOrPut(self.gpa, ty.toIntern());
-                if (entry.found_existing) return entry.value_ptr.ty_ref;
+                if (self.type_map.get(ty.toIntern())) |info| return info.ty_ref;
 
                 const bool_ty_ref = try self.resolveType(Type.bool, .indirect);
 
@@ -1213,9 +1198,7 @@ pub const DeclGen = struct {
                     },
                 } });
 
-                entry.value_ptr.* = .{
-                    .ty_ref = ty_ref,
-                };
+                try self.type_map.put(self.gpa, ty.toIntern(), .{ .ty_ref = ty_ref });
                 return ty_ref;
             },
             .Union => return try self.resolveUnionType(ty, null),
@@ -1229,8 +1212,7 @@ pub const DeclGen = struct {
                     return error_ty_ref;
                 }
 
-                const entry = try self.type_map.getOrPut(self.gpa, ty.toIntern());
-                if (entry.found_existing) return entry.value_ptr.ty_ref;
+                if (self.type_map.get(ty.toIntern())) |info| return info.ty_ref;
 
                 const payload_ty_ref = try self.resolveType(payload_ty, .indirect);
 
@@ -1260,9 +1242,7 @@ pub const DeclGen = struct {
                     .member_names = &member_names,
                 } });
 
-                entry.value_ptr.* = .{
-                    .ty_ref = ty_ref,
-                };
+                try self.type_map.put(self.gpa, ty.toIntern(), .{ .ty_ref = ty_ref });
                 return ty_ref;
             },
 
