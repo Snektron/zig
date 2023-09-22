@@ -299,7 +299,6 @@ const Str = struct { a: []Sub };
 test "set global var array via slice embedded in struct" {
     if (builtin.zig_backend == .stage2_aarch64) return error.SkipZigTest;
     if (builtin.zig_backend == .stage2_sparc64) return error.SkipZigTest; // TODO
-    if (builtin.zig_backend == .stage2_spirv64) return error.SkipZigTest;
 
     var s = Str{ .a = s_array[0..] };
 
@@ -569,7 +568,6 @@ test "type coercion of anon struct literal to array" {
     if (builtin.zig_backend == .stage2_aarch64) return error.SkipZigTest; // TODO
     if (builtin.zig_backend == .stage2_sparc64) return error.SkipZigTest; // TODO
     if (builtin.zig_backend == .stage2_arm) return error.SkipZigTest; // TODO
-    if (builtin.zig_backend == .stage2_spirv64) return error.SkipZigTest;
 
     const S = struct {
         const U = union {
@@ -782,6 +780,8 @@ test "runtime side-effects in comptime-known array init" {
 }
 
 test "slice initialized through reference to anonymous array init provides result types" {
+    if (builtin.zig_backend == .stage2_spirv64) return error.SkipZigTest;
+
     var my_u32: u32 = 123;
     var my_u64: u64 = 456;
     const foo: []const u16 = &.{
@@ -794,6 +794,8 @@ test "slice initialized through reference to anonymous array init provides resul
 }
 
 test "pointer to array initialized through reference to anonymous array init provides result types" {
+    if (builtin.zig_backend == .stage2_spirv64) return error.SkipZigTest;
+
     var my_u32: u32 = 123;
     var my_u64: u64 = 456;
     const foo: *const [4]u16 = &.{

@@ -56,6 +56,8 @@ test "const slice" {
 }
 
 test "comptime slice of undefined pointer of length 0" {
+    if (builtin.zig_backend == .stage2_spirv64) return error.SkipZigTest;
+
     const slice1 = @as([*]i32, undefined)[0..0];
     try expect(slice1.len == 0);
     const slice2 = @as([*]i32, undefined)[100..100];
@@ -229,7 +231,6 @@ test "runtime safety lets us slice from len..len" {
     if (builtin.zig_backend == .stage2_aarch64) return error.SkipZigTest;
     if (builtin.zig_backend == .stage2_arm) return error.SkipZigTest;
     if (builtin.zig_backend == .stage2_sparc64) return error.SkipZigTest; // TODO
-    if (builtin.zig_backend == .stage2_spirv64) return error.SkipZigTest;
 
     var an_array = [_]u8{ 1, 2, 3 };
     try expect(mem.eql(u8, sliceFromLenToLen(an_array[0..], 3, 3), ""));
@@ -242,7 +243,6 @@ fn sliceFromLenToLen(a_slice: []u8, start: usize, end: usize) []u8 {
 test "C pointer" {
     if (builtin.zig_backend == .stage2_aarch64) return error.SkipZigTest; // TODO
     if (builtin.zig_backend == .stage2_sparc64) return error.SkipZigTest; // TODO
-    if (builtin.zig_backend == .stage2_spirv64) return error.SkipZigTest;
 
     var buf: [*c]const u8 = "kjdhfkjdhfdkjhfkfjhdfkjdhfkdjhfdkjhf";
     var len: u32 = 10;
@@ -254,7 +254,6 @@ test "C pointer slice access" {
     if (builtin.zig_backend == .stage2_aarch64) return error.SkipZigTest;
     if (builtin.zig_backend == .stage2_arm) return error.SkipZigTest;
     if (builtin.zig_backend == .stage2_sparc64) return error.SkipZigTest; // TODO
-    if (builtin.zig_backend == .stage2_spirv64) return error.SkipZigTest;
 
     var buf: [10]u32 = [1]u32{42} ** 10;
     const c_ptr = @as([*c]const u32, @ptrCast(&buf));
@@ -284,7 +283,6 @@ fn sliceSum(comptime q: []const u8) i32 {
 test "slice type with custom alignment" {
     if (builtin.zig_backend == .stage2_aarch64) return error.SkipZigTest;
     if (builtin.zig_backend == .stage2_sparc64) return error.SkipZigTest; // TODO
-    if (builtin.zig_backend == .stage2_spirv64) return error.SkipZigTest;
 
     const LazilyResolvedType = struct {
         anything: i32,
@@ -618,7 +616,6 @@ test "type coercion of pointer to anon struct literal to pointer to slice" {
     if (builtin.zig_backend == .stage2_aarch64) return error.SkipZigTest; // TODO
     if (builtin.zig_backend == .stage2_arm) return error.SkipZigTest; // TODO
     if (builtin.zig_backend == .stage2_sparc64) return error.SkipZigTest; // TODO
-    if (builtin.zig_backend == .stage2_spirv64) return error.SkipZigTest;
 
     const S = struct {
         const U = union {

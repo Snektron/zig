@@ -1117,6 +1117,8 @@ test "@shlWithOverflow" {
 }
 
 test "overflow arithmetic with u0 values" {
+    if (builtin.zig_backend == .stage2_spirv64) return error.SkipZigTest;
+
     {
         var a: u0 = 0;
         const ov = @addWithOverflow(a, 0);
@@ -1285,8 +1287,6 @@ fn testShrExact(x: u8) !void {
 }
 
 test "shift left/right on u0 operand" {
-    if (builtin.zig_backend == .stage2_spirv64) return error.SkipZigTest;
-
     const S = struct {
         fn doTheTest() !void {
             var x: u0 = 0;

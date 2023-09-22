@@ -856,8 +856,6 @@ fn doALoopThing(id: EnumWithOneMember) void {
 }
 
 test "comparison operator on enum with one member is comptime-known" {
-    if (builtin.zig_backend == .stage2_spirv64) return error.SkipZigTest;
-
     doALoopThing(EnumWithOneMember.Eof);
 }
 

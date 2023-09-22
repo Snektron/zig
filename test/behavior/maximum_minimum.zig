@@ -137,8 +137,6 @@ test "@min/@max on lazy values" {
 }
 
 test "@min/@max more than two arguments" {
-    if (builtin.zig_backend == .stage2_spirv64) return error.SkipZigTest;
-
     const x: u32 = 30;
     const y: u32 = 10;
     const z: u32 = 20;

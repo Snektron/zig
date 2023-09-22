@@ -134,8 +134,6 @@ test "invoke static method in global scope" {
 const empty_global_instance = StructWithNoFields{};
 
 test "return empty struct instance" {
-    if (builtin.zig_backend == .stage2_spirv64) return error.SkipZigTest;
-
     _ = returnEmptyStructInstance();
 }
 fn returnEmptyStructInstance() StructWithNoFields {
@@ -328,7 +326,6 @@ const VoidStructFieldsFoo = struct {
 
 test "return empty struct from fn" {
     if (builtin.zig_backend == .stage2_sparc64) return error.SkipZigTest; // TODO
-    if (builtin.zig_backend == .stage2_spirv64) return error.SkipZigTest;
 
     _ = testReturnEmptyStructFromFn();
 }
@@ -1766,6 +1763,8 @@ test "runtime side-effects in comptime-known struct init" {
 }
 
 test "pointer to struct initialized through reference to anonymous initializer provides result types" {
+    if (builtin.zig_backend == .stage2_spirv64) return error.SkipZigTest;
+
     const S = struct { a: u8, b: u16, c: *const anyopaque };
     var my_u16: u16 = 0xABCD;
     const s: *const S = &.{

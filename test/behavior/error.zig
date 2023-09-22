@@ -124,7 +124,6 @@ test "debug info for optional error set" {
 
 test "implicit cast to optional to error union to return result loc" {
     if (builtin.zig_backend == .stage2_sparc64) return error.SkipZigTest; // TODO
-    if (builtin.zig_backend == .stage2_spirv64) return error.SkipZigTest;
 
     const S = struct {
         fn entry() !void {
@@ -236,6 +235,8 @@ fn testExplicitErrorSetCast(set1: Set1) !void {
 }
 
 test "@errorCast on error unions" {
+    if (builtin.zig_backend == .stage2_spirv64) return error.SkipZigTest;
+
     const S = struct {
         fn doTheTest() !void {
             {
@@ -469,7 +470,6 @@ test "optional error set is the same size as error set" {
     if (builtin.zig_backend == .stage2_aarch64) return error.SkipZigTest; // TODO
     if (builtin.zig_backend == .stage2_arm) return error.SkipZigTest; // TODO
     if (builtin.zig_backend == .stage2_sparc64) return error.SkipZigTest; // TODO
-    if (builtin.zig_backend == .stage2_spirv64) return error.SkipZigTest;
 
     try comptime expect(@sizeOf(?anyerror) == @sizeOf(anyerror));
     try comptime expect(@alignOf(?anyerror) == @alignOf(anyerror));
@@ -485,7 +485,6 @@ test "optional error set is the same size as error set" {
 test "nested catch" {
     if (builtin.zig_backend == .stage2_aarch64) return error.SkipZigTest; // TODO
     if (builtin.zig_backend == .stage2_sparc64) return error.SkipZigTest; // TODO
-    if (builtin.zig_backend == .stage2_spirv64) return error.SkipZigTest;
 
     const S = struct {
         fn entry() !void {
@@ -568,7 +567,6 @@ test "error payload type is correctly resolved" {
     if (builtin.zig_backend == .stage2_arm) return error.SkipZigTest; // TODO
     if (builtin.zig_backend == .stage2_aarch64) return error.SkipZigTest; // TODO
     if (builtin.zig_backend == .stage2_sparc64) return error.SkipZigTest; // TODO
-    if (builtin.zig_backend == .stage2_spirv64) return error.SkipZigTest;
 
     const MyIntWrapper = struct {
         const Self = @This();
@@ -920,7 +918,6 @@ test "optional error union return type" {
 test "optional error set return type" {
     if (builtin.zig_backend == .stage2_arm) return error.SkipZigTest; // TODO
     if (builtin.zig_backend == .stage2_aarch64) return error.SkipZigTest; // TODO
-    if (builtin.zig_backend == .stage2_spirv64) return error.SkipZigTest;
 
     const E = error{ A, B };
     const S = struct {
