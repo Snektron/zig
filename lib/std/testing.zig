@@ -199,6 +199,19 @@ test "expectEqual.union(enum)" {
     try expectEqual(a10, a10);
 }
 
+/// This function is intended ot be used only in tests. When the actual value
+/// is bitwise not exactly equal to the expected value. prints a diagnostic
+/// to stderr to show how they are not equal, then returns a test failure error.
+pub fn expectEqualFloatBits(expected: anytype, actual: @TypeOf(expected)) !void {
+    const Bits = @Type(.{ .Int = .{ .signedness = .unsigned, .bits = @bitSizeOf(@TypeOf(expected)) } });
+    const expected_bits: Bits = @bitCast(expected);
+    const actual_bits: Bits = @bitCast(actual);
+    if (expected_bits != actual_bits) {
+        print("expected {d} ({x}), found {d} ({x})\n", .{ expected, expected_bits, actual, actual_bits });
+        return error.TestExpectedEqBits;
+    }
+}
+
 /// This function is intended to be used only in tests. When the formatted result of the template
 /// and its arguments does not equal the expected text, it prints diagnostics to stderr to show how
 /// they are not equal, then returns an error.
