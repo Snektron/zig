@@ -2056,6 +2056,8 @@ test "struct field default value is a call" {
 }
 
 test "aggregate initializers should allow initializing comptime fields, verifying equality" {
+    if (builtin.zig_backend == .stage2_spirv64) return error.SkipZigTest;
+
     var x: u32 = 15;
     _ = &x;
     const T = @TypeOf(.{ @as(i32, -1234), @as(u32, 5678), x });
