@@ -634,7 +634,7 @@ const DeclGen = struct {
     }
 
     /// Checks whether the type can be directly translated to SPIR-V vectors
-    fn isVector(self: *DeclGen, ty: Type) bool {
+    fn isSpvVector(self: *DeclGen, ty: Type) bool {
         const mod = self.module;
         const target = self.getTarget();
         if (ty.zigTypeTag(mod) != .Vector) return false;
@@ -802,6 +802,7 @@ const DeclGen = struct {
     /// ty must be an vector type.
     /// Constituents should be in `indirect` representation (as the elements of an vector should be).
     /// Result is in `direct` representation.
+    /// TODO: Change operands to `direct` representation.
     fn constructVector(self: *DeclGen, ty: Type, constituents: []const IdRef) !IdRef {
         // The Khronos LLVM-SPIRV translator crashes because it cannot construct structs which'
         // operands are not constant.
@@ -816,6 +817,24 @@ const DeclGen = struct {
             try self.func.body.emit(self.spv.gpa, .OpStore, .{
                 .pointer = ptr_id,
                 .object = constitent_id,
+            });
+        }
+
+        return try self.load(ty, ptr_composite_id, .{});
+    }
+
+    /// Construct a vector (at runtime) by broadcasting a scalar.
+    /// Result and operand are in `direct` representation.
+    fn constructVectorFromScalar(self: *DeclGen, ty: Type, scalar: IdRef) !IdRef {
+        const mod = self.module;
+        const n = ty.vectorLen(mod);
+        const ptr_composite_id = try self.alloc(ty, .{ .storage_class = .Function });
+        const ptr_elem_ty_ref = try self.ptrType(ty.elemType2(mod), .Function);
+        for (0..n) |index| {
+            const ptr_id = try self.accessChain(ptr_elem_ty_ref, ptr_composite_id, &.{@as(u32, @intCast(index))});
+            try self.func.body.emit(self.spv.gpa, .OpStore, .{
+                .pointer = ptr_id,
+                .object = scalar,
             });
         }
 
@@ -1577,7 +1596,7 @@ const DeclGen = struct {
                 const elem_ty_ref = try self.resolveType(elem_ty, .indirect);
                 const len = ty.vectorLen(mod);
 
-                const ty_ref = if (self.isVector(ty))
+                const ty_ref = if (self.isSpvVector(ty))
                     try self.spv.vectorType(len, elem_ty_ref)
                 else
                     try self.spv.arrayType(len, elem_ty_ref);
@@ -1939,7 +1958,7 @@ const DeclGen = struct {
     /// Create a new element-wise operation.
     fn elementWise(self: *DeclGen, result_ty: Type, force_element_wise: bool) !WipElementWise {
         const mod = self.module;
-        const is_array = result_ty.isVector(mod) and (!self.isVector(result_ty) or force_element_wise);
+        const is_array = result_ty.isVector(mod) and (!self.isSpvVector(result_ty) or force_element_wise);
         const num_results = if (is_array) result_ty.vectorLen(mod) else 1;
         const results = try self.gpa.alloc(IdRef, num_results);
         @memset(results, undefined);
@@ -1956,6 +1975,376 @@ const DeclGen = struct {
             .is_array = is_array,
             .results = results,
         };
+    }
+
+    /// This struct models a "temporary value": something that is being used
+    /// as part of a particular operation. These ephemeral and only used as
+    /// part of lowering a particular operation, so "temporary".
+    const Temporary = struct {
+        ty: Type,
+        ty_ref: CacheRef,
+        value: Temporary.Value,
+
+        fn init(ty: Type, ty_ref: CacheRef, id: IdRef) Temporary {
+            return .{
+                .ty = ty,
+                .ty_ref = ty_ref,
+                .value = .{ .id = id },
+            };
+        }
+
+        fn finalize(self: Temporary, dg: *DeclGen) !IdRef {
+            const mod = dg.module;
+            switch (self.value) {
+                .id => |id| return id,
+                .linear => |range| {
+                    if (!self.ty.isVector(mod)) {
+                        assert(range.len == 1);
+                        return range.at(0);
+                    }
+
+                    const n = self.ty.vectorLen(mod);
+                    assert(range.len == n);
+
+                    // TODO: Remove allocation?
+                    const constituents = try dg.gpa.alloc(IdRef, n);
+                    defer dg.gpa.free(constituents);
+                    for (constituents, 0..) |*id, i| {
+                        id.* = range.at(i);
+                    }
+                    return try dg.constructVector(self.ty, constituents);
+                },
+            }
+        }
+
+        const Value = union(enum) {
+            id: IdResult,
+            linear: SpvModule.IdRange,
+        };
+    };
+
+    fn temporary(self: *DeclGen, inst: Air.Inst.Ref) !Temporary {
+        const ty = self.typeOf(inst);
+        const ty_ref = try self.resolveType(ty, .direct);
+        const value = try self.resolve(inst);
+        return Temporary.init(ty, ty_ref, value);
+    }
+
+    const Operation = union(enum) {
+        const Kind = std.meta.Tag(Operation);
+
+        u_convert: Convert,
+        srl: Shift,
+        sra: Shift,
+        sll: Shift,
+        bit_and: BinOp,
+
+        const Convert = struct {
+            dst_ty: Type,
+            src: Temporary,
+        };
+
+        const Shift = struct {
+            base: Temporary,
+            shift: Temporary,
+        };
+
+        const BinOp = struct {
+            lhs: Temporary,
+            rhs: Temporary,
+        };
+
+        /// This enum indicates how the operation is going to be
+        /// performed.
+        const Vectorization = union(enum) {
+            /// This is an operation between scalars.
+            scalar,
+            /// This is an operation that can be vectorized using
+            /// SPIR-V (not Zig!) vector operations.
+            /// Data is number of components.
+            spv_vectorizable: u32,
+            /// This is an oepration that either cannot be vectorized
+            /// using SPIR-V operations or the inputs are not in a
+            /// compatible vector for (for example, a 5-component vector).
+            /// Data is number of components.
+            unrolled: u32,
+
+            /// Compute the unification of two vectorization types.
+            /// If both types are vectors, and one is not vectorizable,
+            /// then the result is not vectorizable either.
+            fn unify(a: Vectorization, b: Vectorization) Vectorization {
+                const n = a.components();
+
+                // Scalars may broadcast. They can partake both in vectorized
+                // and unrolled operations.
+
+                if (a == .scalar and b == .scalar) {
+                    return .scalar;
+                } else if (a == .spv_vectorizable and b == .spv_vectorizable) {
+                    assert(a.components() == b.components());
+                    return .{ .spv_vectorizable = n };
+                } else if (a == .unrolled or b == .unrolled) {
+                    // Operation cannot be vectorized...
+
+                    if (a == .unrolled and b == .unrolled) {
+                        assert(a.components() == b.components());
+                    }
+
+                    return .{ .unrolled = n };
+                } else {
+                    assert((a == .spv_vectorizable and b == .scalar) or (b == .spv_vectorizable and a == .scalar));
+                    return .{ .spv_vectorizable = n };
+                }
+            }
+
+            /// Derive this Vectorization from a type.
+            fn fromType(ty: Type, dg: *DeclGen) Vectorization {
+                const mod = dg.module;
+                if (ty.isVector(mod)) {
+                    const n = ty.vectorLen(mod);
+                    if (dg.isSpvVector(ty)) {
+                        return .{ .spv_vectorizable = n };
+                    } else {
+                        return .{ .unrolled = n };
+                    }
+                } else {
+                    return .scalar;
+                }
+            }
+
+            fn components(self: Vectorization) u32 {
+                return switch (self) {
+                    .scalar => 1,
+                    .spv_vectorizable => |n| n,
+                    .unrolled => |n| n,
+                };
+            }
+
+            fn operations(self: Vectorization) u32 {
+                return switch (self) {
+                    .scalar, .spv_vectorizable => 1,
+                    .unrolled => |n| n,
+                };
+            }
+
+            fn prepare(
+                self: Vectorization,
+                dg: *DeclGen,
+                tmp: Temporary,
+            ) !PreparedOperand {
+                const mod = dg.module;
+                const ty_is_vector = tmp.ty.isVector(mod);
+                const value: PreparedOperand.Value = switch (tmp.value) {
+                    .id => |id| switch (self) {
+                        .scalar => blk: {
+                            assert(!ty_is_vector);
+                            break :blk .{ .scalar = id };
+                        },
+                        .spv_vectorizable => blk: {
+                            // Value may either be a Zig/SPIR-V vector or a scalar. If its a scalar,
+                            // we need to broadcast it.
+                            if (ty_is_vector) {
+                                assert(dg.isSpvVector(tmp.ty));
+                                break :blk .{ .spv_vectorwise = id };
+                            }
+
+                            const vector = try dg.constructVectorFromScalar(tmp.ty, id);
+                            break :blk .{ .spv_vectorwise = vector };
+                        },
+                        .unrolled => blk: {
+                            // Value may either be a Zig vector (SPIR-V array or vector), or a scalar.
+                            // If its a scalar, we need to broadcast it.
+                            if (ty_is_vector) {
+                                break :blk .{ .spv_elementwise = id };
+                            }
+
+                            break :blk .{ .scalar_broadcast = id };
+                        },
+                    },
+                    .linear => |range| switch (self) {
+                        .scalar => blk: {
+                            assert(!ty_is_vector);
+                            assert(range.len == 1);
+                            break :blk .{ .scalar = range.at(0) };
+                        },
+                        .spv_vectorizable => |n| blk: {
+                            // If we can vectorize the operation, but we have a bag of IDs,
+                            // then pack them up in a vector.
+                            // This path is expected to not be taken very often, there shouldn't
+                            // be any operations that produce a .linear temporary with SPIR-V
+                            // vector operands.
+                            assert(range.len == n);
+                            // TODO: Remove allocation?
+                            const constituents = try dg.gpa.alloc(IdRef, n);
+                            defer dg.gpa.free(constituents);
+                            for (constituents, 0..) |*id, i| {
+                                id.* = range.at(i);
+                            }
+                            const id = try dg.constructVector(tmp.ty, constituents);
+                            break :blk .{ .spv_vectorwise = id };
+                        },
+                        .unrolled => |n| blk: {
+                            assert(range.len == n);
+                            break :blk .{ .linear = range };
+                        },
+                    },
+                };
+
+                return .{
+                    .dg = dg,
+                    .ty = tmp.ty,
+                    .value = value,
+                };
+            }
+
+            fn finalize(
+                self: Vectorization,
+                ty: Type,
+                ty_ref: CacheRef,
+                results: SpvModule.IdRange,
+            ) Temporary {
+                const value: Temporary.Value = switch (self) {
+                    .scalar, .spv_vectorizable => .{ .id = results.at(0) },
+                    .unrolled => .{ .linear = results },
+                };
+
+                return .{
+                    .ty = ty,
+                    .ty_ref = ty_ref,
+                    .value = value,
+                };
+            }
+        };
+
+        const PreparedOperand = struct {
+            dg: *DeclGen,
+            ty: Type,
+            value: PreparedOperand.Value,
+
+            const Value = union(enum) {
+                scalar: IdResult,
+                scalar_broadcast: IdResult,
+                spv_vectorwise: IdResult,
+                spv_elementwise: IdResult,
+                linear: SpvModule.IdRange,
+            };
+
+            fn at(self: PreparedOperand, i: usize) !IdResult {
+                const dg = self.dg;
+                const mod = dg.module;
+                switch (self.value) {
+                    .scalar => |id| {
+                        assert(i == 0);
+                        return id;
+                    },
+                    .scalar_broadcast => |id| {
+                        return id;
+                    },
+                    .spv_vectorwise => |id| {
+                        assert(i == 0);
+                        return id;
+                    },
+                    .spv_elementwise => |id| {
+                        return try dg.extractField(self.ty.childType(mod), id, @intCast(i));
+                    },
+                    .linear => |range| return range.at(i),
+                }
+            }
+        };
+
+        fn vectorization(self: Operation, dg: *DeclGen) Vectorization {
+            switch (self) {
+                .u_convert => |convert| {
+                    return Vectorization.unify(
+                        Vectorization.fromType(convert.dst_ty, dg),
+                        Vectorization.fromType(convert.src.ty, dg),
+                    );
+                },
+                .srl, .sra, .sll => |shift| {
+                    return Vectorization.unify(
+                        Vectorization.fromType(shift.base.ty, dg),
+                        Vectorization.fromType(shift.shift.ty, dg),
+                    );
+                },
+                .bit_and => |bin| {
+                    return Vectorization.unify(
+                        Vectorization.fromType(bin.lhs.ty, dg),
+                        Vectorization.fromType(bin.rhs.ty, dg),
+                    );
+                },
+            }
+        }
+    };
+
+    fn emit(self: *DeclGen, op: Operation) !Temporary {
+        const v = op.vectorization(self);
+        const ops = v.operations();
+        const results = self.spv.allocIds(ops);
+
+        switch (op) {
+            .u_convert => |convert| {
+                const dst_ty_ref = try self.resolveType(convert.dst_ty, .direct);
+                const dst_ty_id = self.typeId(dst_ty_ref);
+
+                const src = try v.prepare(self, convert.src);
+
+                for (0..ops) |i| {
+                    try self.func.body.emit(self.spv.gpa, .OpUConvert, .{
+                        .id_result_type = dst_ty_id,
+                        .id_result = results.at(i),
+                        .unsigned_value = try src.at(i),
+                    });
+                }
+
+                return v.finalize(convert.dst_ty, dst_ty_ref, results);
+            },
+            .srl, .sra, .sll => |shift_op| {
+                const result_ty_id = self.typeId(shift_op.base.ty_ref);
+
+                const base = try v.prepare(self, shift_op.base);
+                const shift = try v.prepare(self, shift_op.shift);
+
+                for (0..ops) |i| {
+                    const operands = .{
+                        .id_result_type = result_ty_id,
+                        .id_result = results.at(i),
+                        .base = try base.at(i),
+                        .shift = try shift.at(i),
+                    };
+                    switch (op) {
+                        .srl => try self.func.body.emit(self.spv.gpa, .OpShiftRightLogical, operands),
+                        .sra => try self.func.body.emit(self.spv.gpa, .OpShiftRightArithmetic, operands),
+                        .sll => try self.func.body.emit(self.spv.gpa, .OpShiftLeftLogical, operands),
+                        else => unreachable,
+                    }
+                }
+
+                return v.finalize(shift_op.base.ty, shift_op.base.ty_ref, results);
+            },
+            .bit_and => |bin| {
+                assert(bin.lhs.ty_ref == bin.rhs.ty_ref);
+                const result_ty_id = self.typeId(bin.lhs.ty_ref);
+
+                const lhs = try v.prepare(self, bin.lhs);
+                const rhs = try v.prepare(self, bin.rhs);
+
+                for (0..ops) |i| {
+                    const operands = .{
+                        .id_result_type = result_ty_id,
+                        .id_result = results.at(i),
+                        .operand_1 = try lhs.at(i),
+                        .operand_2 = try rhs.at(i),
+                    };
+
+                    switch (op) {
+                        .bit_and => try self.func.body.emit(self.spv.gpa, .OpBitwiseAnd, operands),
+                        else => unreachable,
+                    }
+                }
+
+                return v.finalize(bin.lhs.ty, bin.lhs.ty_ref, results);
+            },
+        }
     }
 
     /// The SPIR-V backend is not yet advanced enough to support the std testing infrastructure.
@@ -2348,8 +2737,8 @@ const DeclGen = struct {
             .bool_and => try self.airBinOpSimple(inst, .OpLogicalAnd),
             .bool_or  => try self.airBinOpSimple(inst, .OpLogicalOr),
 
-            .shl, .shl_exact => try self.airShift(inst, .OpShiftLeftLogical, .OpShiftLeftLogical),
-            .shr, .shr_exact => try self.airShift(inst, .OpShiftRightLogical, .OpShiftRightArithmetic),
+            .shl, .shl_exact => try self.airShift(inst, .sll, .sll),
+            .shr, .shr_exact => try self.airShift(inst, .srl, .sra),
 
             .min => try self.airMinMax(inst, .lt),
             .max => try self.airMinMax(inst, .gt),
@@ -2476,58 +2865,45 @@ const DeclGen = struct {
         return try self.binOpSimple(ty, lhs_id, rhs_id, opcode);
     }
 
-    fn airShift(self: *DeclGen, inst: Air.Inst.Index, comptime unsigned: Opcode, comptime signed: Opcode) !?IdRef {
-        const mod = self.module;
+    fn airShift(
+        self: *DeclGen,
+        inst: Air.Inst.Index,
+        comptime unsigned: Operation.Kind,
+        comptime signed: Operation.Kind,
+    ) !?IdRef {
         const bin_op = self.air.instructions.items(.data)[@intFromEnum(inst)].bin_op;
-        const lhs_id = try self.resolve(bin_op.lhs);
-        const rhs_id = try self.resolve(bin_op.rhs);
 
-        const result_ty = self.typeOfIndex(inst);
-        const shift_ty = self.typeOf(bin_op.rhs);
-        const shift_ty_ref = try self.resolveType(shift_ty, .direct);
+        const base = try self.temporary(bin_op.lhs);
+        const shift = try self.temporary(bin_op.rhs);
 
-        const info = self.arithmeticTypeInfo(result_ty);
+        const info = self.arithmeticTypeInfo(base.ty);
         switch (info.class) {
             .composite_integer => return self.todo("shift ops for composite integers", .{}),
             .integer, .strange_integer => {},
             .float, .bool => unreachable,
         }
 
-        var wip = try self.elementWise(result_ty, false);
-        defer wip.deinit();
-        for (wip.results, 0..) |*result_id, i| {
-            const lhs_elem_id = try wip.elementAt(result_ty, lhs_id, i);
-            const rhs_elem_id = try wip.elementAt(shift_ty, rhs_id, i);
+        // Sometimes Zig doesn't make both of the arguments the same types here. SPIR-V expects that,
+        // so just manually upcast it if required.
+        const shift_casted = if (shift.ty_ref != base.ty_ref)
+            try self.emit(.{ .u_convert = .{
+                .dst_ty = base.ty,
+                .src = shift,
+            } })
+        else
+            shift;
 
-            // Sometimes Zig doesn't make both of the arguments the same types here. SPIR-V expects that,
-            // so just manually upcast it if required.
-            const shift_id = if (shift_ty_ref != wip.ty_ref) blk: {
-                const shift_id = self.spv.allocId();
-                try self.func.body.emit(self.spv.gpa, .OpUConvert, .{
-                    .id_result_type = wip.ty_id,
-                    .id_result = shift_id,
-                    .unsigned_value = rhs_elem_id,
-                });
-                break :blk shift_id;
-            } else rhs_elem_id;
+        const args = Operation.Shift{
+            .base = base,
+            .shift = shift_casted,
+        };
 
-            const value_id = self.spv.allocId();
-            const args = .{
-                .id_result_type = wip.ty_id,
-                .id_result = value_id,
-                .base = lhs_elem_id,
-                .shift = shift_id,
-            };
+        const result = switch (info.signedness) {
+            .signed => try self.emit(@unionInit(Operation, @tagName(signed), args)),
+            .unsigned => try self.emit(@unionInit(Operation, @tagName(unsigned), args)),
+        };
 
-            if (result_ty.isSignedInt(mod)) {
-                try self.func.body.emit(self.spv.gpa, signed, args);
-            } else {
-                try self.func.body.emit(self.spv.gpa, unsigned, args);
-            }
-
-            result_id.* = try self.normalize(wip.ty_ref, value_id, info);
-        }
-        return try wip.finalize();
+        return try result.finalize(self);
     }
 
     fn airMinMax(self: *DeclGen, inst: Air.Inst.Index, op: std.math.CompareOperator) !?IdRef {
@@ -2653,6 +3029,47 @@ const DeclGen = struct {
                         .shift = shift_amt_id,
                     });
                     return right_id;
+                },
+            },
+        }
+    }
+
+    fn normalize2(self: *DeclGen, value: Temporary, info: ArithmeticTypeInfo) !Temporary {
+        switch (info.class) {
+            .integer, .bool, .float => return value,
+            .composite_integer => unreachable, // TODO
+            .strange_integer => switch (info.signedness) {
+                .unsigned => {
+                    const mask_value = if (info.bits == 64) 0xFFFF_FFFF_FFFF_FFFF else (@as(u64, 1) << @as(u6, @intCast(info.bits))) - 1;
+                    const mask = Temporary.init(
+                        value.ty,
+                        value.ty_ref,
+                        try self.constInt(value.ty_ref, mask_value),
+                    );
+
+                    return try self.emit(.{ .bit_and = .{
+                        .lhs = value,
+                        .rhs = mask,
+                    } });
+                },
+                .signed => {
+                    const shift = Temporary.init(
+                        value.ty,
+                        value.ty_ref,
+                        try self.constInt(value.ty_ref, info.backing_bits - info.bits),
+                    );
+
+                    const left = try self.emit(.{ .sll = .{
+                        .base = value,
+                        .shift = shift,
+                    } });
+
+                    const right = try self.emit(.{ .sra = .{
+                        .base = left,
+                        .shift = shift,
+                    } });
+
+                    return right;
                 },
             },
         }
@@ -2802,7 +3219,7 @@ const DeclGen = struct {
         const ov_ty = result_ty.structFieldType(1, self.module);
 
         const bool_ty_ref = try self.resolveType(Type.bool, .direct);
-        const cmp_ty_ref = if (self.isVector(operand_ty))
+        const cmp_ty_ref = if (self.isSpvVector(operand_ty))
             try self.spv.vectorType(operand_ty.vectorLen(mod), bool_ty_ref)
         else
             bool_ty_ref;
@@ -2919,7 +3336,7 @@ const DeclGen = struct {
         const ov_ty = result_ty.structFieldType(1, self.module);
 
         const bool_ty_ref = try self.resolveType(Type.bool, .direct);
-        const cmp_ty_ref = if (self.isVector(operand_ty))
+        const cmp_ty_ref = if (self.isSpvVector(operand_ty))
             try self.spv.vectorType(operand_ty.vectorLen(mod), bool_ty_ref)
         else
             bool_ty_ref;
