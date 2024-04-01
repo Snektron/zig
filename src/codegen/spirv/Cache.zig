@@ -66,18 +66,13 @@ const Tag = enum {
     /// Function (proto)type
     /// data is payload to FunctionType
     type_function,
-    // /// Pointer type in the CrossWorkgroup storage class
-    // /// data is child type
-    // type_ptr_generic,
-    // /// Pointer type in the CrossWorkgroup storage class
-    // /// data is child type
-    // type_ptr_crosswgp,
-    // /// Pointer type in the Function storage class
-    // /// data is child type
-    // type_ptr_function,
     /// Simple pointer type that does not have any decorations.
     /// data is payload to SimplePointerType
     type_ptr_simple,
+    /// Pointer type that does not have any decorations but does have
+    /// a forward declaration
+    /// data is payload to SimpleFwdPointerType
+    type_ptr_simple_fwd,
     /// A forward declaration for a pointer.
     /// data is ForwardPointerType
     type_fwd_ptr,
@@ -150,6 +145,11 @@ const Tag = enum {
     };
 
     const SimplePointerType = struct {
+        storage_class: StorageClass,
+        child_type: Ref,
+    };
+
+    const SimpleFwdPointerType = struct {
         storage_class: StorageClass,
         child_type: Ref,
         fwd: Ref,
@@ -290,8 +290,8 @@ pub const Key = union(enum) {
     pub const PointerType = struct {
         storage_class: StorageClass,
         child_type: Ref,
-        /// Ref to a .fwd_ptr_type.
-        fwd: Ref,
+        /// Possibly a Ref to a .fwd_ptr_type.
+        fwd: ?Ref,
         // TODO: Decorations:
         // - Alignment
         // - ArrayStride
@@ -705,42 +705,30 @@ pub fn resolve(self: *Self, spv: *Module, key: Key) !Ref {
                 .data = extra,
             };
         },
-        // .ptr_type => |ptr| switch (ptr.storage_class) {
-        //     .Generic => Item{
-        //         .tag = .type_ptr_generic,
-        //         .result_id = spv.allocId(),
-        //         .data = @intFromEnum(ptr.child_type),
-        //     },
-        //     .CrossWorkgroup => Item{
-        //         .tag = .type_ptr_crosswgp,
-        //         .result_id = spv.allocId(),
-        //         .data = @intFromEnum(ptr.child_type),
-        //     },
-        //     .Function => Item{
-        //         .tag = .type_ptr_function,
-        //         .result_id = spv.allocId(),
-        //         .data = @intFromEnum(ptr.child_type),
-        //     },
-        //     else => |storage_class| Item{
-        //         .tag = .type_ptr_simple,
-        //         .result_id = spv.allocId(),
-        //         .data = try self.addExtra(spv, Tag.SimplePointerType{
-        //             .storage_class = storage_class,
-        //             .child_type = ptr.child_type,
-        //         }),
-        //     },
-        // },
-        .ptr_type => |ptr| Item{
-            .tag = .type_ptr_simple,
-            // For this variant we need to steal the ID of the forward-declaration, instead
-            // of allocating one manually. This will make sure that we get a single result-id
-            // any possibly forward declared pointer type.
-            .result_id = self.resultId(ptr.fwd),
-            .data = try self.addExtra(spv, Tag.SimplePointerType{
-                .storage_class = ptr.storage_class,
-                .child_type = ptr.child_type,
-                .fwd = ptr.fwd,
-            }),
+        .ptr_type => |ptr| blk: {
+            if (ptr.fwd) |fwd| {
+                break :blk Item{
+                    .tag = .type_ptr_simple_fwd,
+                    // For this variant we need to steal the ID of the forward-declaration, instead
+                    // of allocating one manually. This will make sure that we get a single result-id
+                    // any possibly forward declared pointer type.
+                    .result_id = self.resultId(fwd),
+                    .data = try self.addExtra(spv, Tag.SimpleFwdPointerType{
+                        .storage_class = ptr.storage_class,
+                        .child_type = ptr.child_type,
+                        .fwd = fwd,
+                    }),
+                };
+            } else {
+                break :blk Item{
+                    .tag = .type_ptr_simple,
+                    .result_id = spv.allocId(),
+                    .data = try self.addExtra(spv, Tag.SimplePointerType{
+                        .storage_class = ptr.storage_class,
+                        .child_type = ptr.child_type,
+                    }),
+                };
+            }
         },
         .fwd_ptr_type => |fwd| Item{
             .tag = .type_fwd_ptr,
@@ -905,6 +893,16 @@ pub fn lookup(self: *const Self, ref: Ref) Key {
         },
         .type_ptr_simple => {
             const payload = self.extraData(Tag.SimplePointerType, data);
+            return .{
+                .ptr_type = .{
+                    .storage_class = payload.storage_class,
+                    .child_type = payload.child_type,
+                    .fwd = null,
+                },
+            };
+        },
+        .type_ptr_simple_fwd => {
+            const payload = self.extraData(Tag.SimpleFwdPointerType, data);
             return .{
                 .ptr_type = .{
                     .storage_class = payload.storage_class,

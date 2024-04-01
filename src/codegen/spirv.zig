@@ -39,7 +39,7 @@ const SpvTypeInfo = struct {
     ty_ref: CacheRef,
 };
 
-const TypeMap = std.AutoHashMapUnmanaged(InternPool.Index, SpvTypeInfo);
+const TypeMap = std.AutoHashMapUnmanaged(struct { InternPool.Index, DeclGen.Repr }, SpvTypeInfo);
 
 const ControlFlow = union(enum) {
     const Structured = struct {
@@ -800,45 +800,124 @@ const DeclGen = struct {
 
     /// Construct a vector at runtime.
     /// ty must be an vector type.
-    /// Constituents should be in `indirect` representation (as the elements of an vector should be).
+    /// Constituents should be in `direct` representation.
     /// Result is in `direct` representation.
-    /// TODO: Change operands to `direct` representation.
     fn constructVector(self: *DeclGen, ty: Type, constituents: []const IdRef) !IdRef {
         // The Khronos LLVM-SPIRV translator crashes because it cannot construct structs which'
         // operands are not constant.
         // See https://github.com/KhronosGroup/SPIRV-LLVM-Translator/issues/1349
         // For now, just initialize the struct by setting the fields manually...
         // TODO: Make this OpCompositeConstruct when we can
+
+        // Note: No conversions between direct/indirect required here, so just lower all the operations
+        // manually to avoid surprises.
+
         const mod = self.module;
-        const ptr_composite_id = try self.alloc(ty, .{ .storage_class = .Function });
-        const ptr_elem_ty_ref = try self.ptrType(ty.elemType2(mod), .Function);
-        for (constituents, 0..) |constitent_id, index| {
-            const ptr_id = try self.accessChain(ptr_elem_ty_ref, ptr_composite_id, &.{@as(u32, @intCast(index))});
+        const n = ty.vectorLen(mod);
+
+        const ty_ref = try self.resolveType(ty, .direct);
+        const ptr_ty_ref = try self.spv.resolve(.{
+            .ptr_type = .{
+                .storage_class = .Function,
+                .child_type = ty_ref,
+                .fwd = null, // Never recursive
+            },
+        });
+
+        const elem_ty = ty.elemType2(mod);
+        const elem_ty_ref = try self.resolveType(elem_ty, .direct);
+        const elem_ptr_ty_ref = try self.spv.resolve(.{
+            .ptr_type = .{
+                .storage_class = .Function,
+                .child_type = elem_ty_ref,
+                .fwd = null, // Never recursive
+            },
+        });
+
+        const var_id = self.spv.allocId();
+        try self.func.prologue.emit(self.spv.gpa, .OpVariable, .{
+            .id_result_type = self.typeId(ptr_ty_ref),
+            .id_result = var_id,
+            .storage_class = .Function,
+            .initializer = null,
+        });
+
+        for (0..n) |i| {
+            const ptr_id = try self.accessChain(elem_ptr_ty_ref, var_id, &.{@intCast(i)});
             try self.func.body.emit(self.spv.gpa, .OpStore, .{
                 .pointer = ptr_id,
-                .object = constitent_id,
+                .object = constituents[i],
             });
         }
 
-        return try self.load(ty, ptr_composite_id, .{});
+        // Object is already in direct representation
+        const result_id = self.spv.allocId();
+        try self.func.body.emit(self.spv.gpa, .OpLoad, .{
+            .id_result_type = self.typeId(ty_ref),
+            .id_result = result_id,
+            .pointer = var_id,
+        });
+        return result_id;
     }
 
     /// Construct a vector (at runtime) by broadcasting a scalar.
     /// Result and operand are in `direct` representation.
     fn constructVectorFromScalar(self: *DeclGen, ty: Type, scalar: IdRef) !IdRef {
+        // The Khronos LLVM-SPIRV translator crashes because it cannot construct structs which'
+        // operands are not constant.
+        // See https://github.com/KhronosGroup/SPIRV-LLVM-Translator/issues/1349
+        // For now, just initialize the struct by setting the fields manually...
+        // TODO: Make this OpCompositeConstruct when we can
+
+        // Note: No conversions between direct/indirect required here, so just lower all the operations
+        // manually to avoid surprises.
+
         const mod = self.module;
         const n = ty.vectorLen(mod);
-        const ptr_composite_id = try self.alloc(ty, .{ .storage_class = .Function });
-        const ptr_elem_ty_ref = try self.ptrType(ty.elemType2(mod), .Function);
-        for (0..n) |index| {
-            const ptr_id = try self.accessChain(ptr_elem_ty_ref, ptr_composite_id, &.{@as(u32, @intCast(index))});
+
+        const ty_ref = try self.resolveType(ty, .direct);
+        const ptr_ty_ref = try self.spv.resolve(.{
+            .ptr_type = .{
+                .storage_class = .Function,
+                .child_type = ty_ref,
+                .fwd = null, // Never recursive
+            },
+        });
+
+        const elem_ty = ty.elemType2(mod);
+        const elem_ty_ref = try self.resolveType(elem_ty, .direct);
+        const elem_ptr_ty_ref = try self.spv.resolve(.{
+            .ptr_type = .{
+                .storage_class = .Function,
+                .child_type = elem_ty_ref,
+                .fwd = null, // Never recursive
+            },
+        });
+
+        const var_id = self.spv.allocId();
+        try self.func.prologue.emit(self.spv.gpa, .OpVariable, .{
+            .id_result_type = self.typeId(ptr_ty_ref),
+            .id_result = var_id,
+            .storage_class = .Function,
+            .initializer = null,
+        });
+
+        for (0..n) |i| {
+            const ptr_id = try self.accessChain(elem_ptr_ty_ref, var_id, &.{@intCast(i)});
             try self.func.body.emit(self.spv.gpa, .OpStore, .{
                 .pointer = ptr_id,
                 .object = scalar,
             });
         }
 
-        return try self.load(ty, ptr_composite_id, .{});
+        // Object is already in direct representation
+        const result_id = self.spv.allocId();
+        try self.func.body.emit(self.spv.gpa, .OpLoad, .{
+            .id_result_type = self.typeId(ty_ref),
+            .id_result = result_id,
+            .pointer = var_id,
+        });
+        return result_id;
     }
 
     /// Construct an array at runtime.
@@ -1035,8 +1114,17 @@ const DeclGen = struct {
                     const elem_ty = Type.fromInterned(array_type.child);
                     const elem_ty_ref = try self.resolveType(elem_ty, .indirect);
 
-                    const constituents = try self.gpa.alloc(IdRef, @as(u32, @intCast(ty.arrayLenIncludingSentinel(mod))));
+                    const constituents = try self.gpa.alloc(IdRef, ty.arrayLenIncludingSentinel(mod));
                     defer self.gpa.free(constituents);
+
+                    const component_repr = switch (tag) {
+                        // Array types always have their components stored in the indirect representation
+                        .array_type => .indirect,
+                        // But for vector-types it depends on the vector's representation.
+                        // This goes for all Zig vectors, both SPIR-V vectors and SPIR-V arrays.
+                        .vector_type => repr,
+                        else => unreachable,
+                    };
 
                     switch (aggregate.storage) {
                         .bytes => |bytes| {
@@ -1048,11 +1136,11 @@ const DeclGen = struct {
                         },
                         .elems => |elems| {
                             for (0..@as(usize, @intCast(array_type.len))) |i| {
-                                constituents[i] = try self.constant(elem_ty, Value.fromInterned(elems[i]), .indirect);
+                                constituents[i] = try self.constant(elem_ty, Value.fromInterned(elems[i]), component_repr);
                             }
                         },
                         .repeated_elem => |elem| {
-                            const val_id = try self.constant(elem_ty, Value.fromInterned(elem), .indirect);
+                            const val_id = try self.constant(elem_ty, Value.fromInterned(elem), component_repr);
                             for (0..@as(usize, @intCast(array_type.len))) |i| {
                                 constituents[i] = val_id;
                             }
@@ -1062,6 +1150,7 @@ const DeclGen = struct {
                     switch (tag) {
                         inline .array_type => {
                             if (array_type.sentinel != .none) {
+                                assert(component_repr == .indirect);
                                 const sentinel = Value.fromInterned(array_type.sentinel);
                                 constituents[constituents.len - 1] = try self.constant(elem_ty, sentinel, .indirect);
                             }
@@ -1378,7 +1467,7 @@ const DeclGen = struct {
             return try self.resolveType(Type.fromInterned(union_obj.enum_tag_ty), .indirect);
         }
 
-        if (self.type_map.get(ty.toIntern())) |info| return info.ty_ref;
+        if (self.type_map.get(.{ ty.toIntern(), .indirect })) |info| return info.ty_ref;
 
         var member_types: [4]CacheRef = undefined;
         var member_names: [4]CacheString = undefined;
@@ -1415,7 +1504,7 @@ const DeclGen = struct {
             .member_names = member_names[0..layout.total_fields],
         } });
 
-        try self.type_map.put(self.gpa, ty.toIntern(), .{ .ty_ref = ty_ref });
+        try self.type_map.put(self.gpa, .{ ty.toIntern(), .indirect }, .{ .ty_ref = ty_ref });
         return ty_ref;
     }
 
@@ -1492,7 +1581,7 @@ const DeclGen = struct {
                 return try self.spv.resolve(.{ .float_type = .{ .bits = bits } });
             },
             .Array => {
-                if (self.type_map.get(ty.toIntern())) |info| return info.ty_ref;
+                if (self.type_map.get(.{ ty.toIntern(), repr })) |info| return info.ty_ref;
 
                 const elem_ty = ty.childType(mod);
                 const elem_ty_ref = try self.resolveType(elem_ty, .indirect);
@@ -1522,12 +1611,12 @@ const DeclGen = struct {
                     break :blk try self.spv.arrayType(1, elem_ty_ref);
                 } else try self.spv.arrayType(total_len, elem_ty_ref);
 
-                try self.type_map.put(self.gpa, ty.toIntern(), .{ .ty_ref = ty_ref });
+                try self.type_map.put(self.gpa, .{ ty.toIntern(), repr }, .{ .ty_ref = ty_ref });
                 return ty_ref;
             },
             .Fn => switch (repr) {
                 .direct => {
-                    if (self.type_map.get(ty.toIntern())) |info| return info.ty_ref;
+                    if (self.type_map.get(.{ ty.toIntern(), repr })) |info| return info.ty_ref;
 
                     const fn_info = mod.typeToFunc(ty).?;
 
@@ -1558,7 +1647,7 @@ const DeclGen = struct {
                         .parameters = param_ty_refs[0..param_index],
                     } });
 
-                    try self.type_map.put(self.gpa, ty.toIntern(), .{ .ty_ref = ty_ref });
+                    try self.type_map.put(self.gpa, .{ ty.toIntern(), repr }, .{ .ty_ref = ty_ref });
                     return ty_ref;
                 },
                 .indirect => {
@@ -1590,10 +1679,10 @@ const DeclGen = struct {
                 } });
             },
             .Vector => {
-                if (self.type_map.get(ty.toIntern())) |info| return info.ty_ref;
+                if (self.type_map.get(.{ ty.toIntern(), repr })) |info| return info.ty_ref;
 
                 const elem_ty = ty.childType(mod);
-                const elem_ty_ref = try self.resolveType(elem_ty, .indirect);
+                const elem_ty_ref = try self.resolveType(elem_ty, repr);
                 const len = ty.vectorLen(mod);
 
                 const ty_ref = if (self.isSpvVector(ty))
@@ -1601,11 +1690,11 @@ const DeclGen = struct {
                 else
                     try self.spv.arrayType(len, elem_ty_ref);
 
-                try self.type_map.put(self.gpa, ty.toIntern(), .{ .ty_ref = ty_ref });
+                try self.type_map.put(self.gpa, .{ ty.toIntern(), repr }, .{ .ty_ref = ty_ref });
                 return ty_ref;
             },
             .Struct => {
-                if (self.type_map.get(ty.toIntern())) |info| return info.ty_ref;
+                if (self.type_map.get(.{ ty.toIntern(), repr })) |info| return info.ty_ref;
 
                 const struct_type = switch (ip.indexToKey(ty.toIntern())) {
                     .anon_struct_type => |tuple| {
@@ -1625,7 +1714,7 @@ const DeclGen = struct {
                             .member_types = member_types[0..member_index],
                         } });
 
-                        try self.type_map.put(self.gpa, ty.toIntern(), .{ .ty_ref = ty_ref });
+                        try self.type_map.put(self.gpa, .{ ty.toIntern(), repr }, .{ .ty_ref = ty_ref });
                         return ty_ref;
                     },
                     .struct_type => ip.loadStructType(ty.toIntern()),
@@ -1662,7 +1751,7 @@ const DeclGen = struct {
                     .member_names = member_names.items,
                 } });
 
-                try self.type_map.put(self.gpa, ty.toIntern(), .{ .ty_ref = ty_ref });
+                try self.type_map.put(self.gpa, .{ ty.toIntern(), repr }, .{ .ty_ref = ty_ref });
                 return ty_ref;
             },
             .Optional => {
@@ -1680,7 +1769,7 @@ const DeclGen = struct {
                     return payload_ty_ref;
                 }
 
-                if (self.type_map.get(ty.toIntern())) |info| return info.ty_ref;
+                if (self.type_map.get(.{ ty.toIntern(), repr })) |info| return info.ty_ref;
 
                 const bool_ty_ref = try self.resolveType(Type.bool, .indirect);
 
@@ -1692,7 +1781,7 @@ const DeclGen = struct {
                     },
                 } });
 
-                try self.type_map.put(self.gpa, ty.toIntern(), .{ .ty_ref = ty_ref });
+                try self.type_map.put(self.gpa, .{ ty.toIntern(), repr }, .{ .ty_ref = ty_ref });
                 return ty_ref;
             },
             .Union => return try self.resolveUnionType(ty),
@@ -1706,7 +1795,7 @@ const DeclGen = struct {
                     return error_ty_ref;
                 }
 
-                if (self.type_map.get(ty.toIntern())) |info| return info.ty_ref;
+                if (self.type_map.get(.{ ty.toIntern(), repr })) |info| return info.ty_ref;
 
                 const payload_ty_ref = try self.resolveType(payload_ty, .indirect);
 
@@ -1736,7 +1825,7 @@ const DeclGen = struct {
                     .member_names = &member_names,
                 } });
 
-                try self.type_map.put(self.gpa, ty.toIntern(), .{ .ty_ref = ty_ref });
+                try self.type_map.put(self.gpa, .{ ty.toIntern(), repr }, .{ .ty_ref = ty_ref });
                 return ty_ref;
             },
             .Opaque => {
@@ -2038,6 +2127,8 @@ const DeclGen = struct {
         sra: Shift,
         sll: Shift,
         bit_and: BinOp,
+        i_not_equal: BinOp,
+        select: Select,
 
         const Convert = struct {
             dst_ty: Type,
@@ -2052,6 +2143,12 @@ const DeclGen = struct {
         const BinOp = struct {
             lhs: Temporary,
             rhs: Temporary,
+        };
+
+        const Select = struct {
+            condition: Temporary,
+            object_1: Temporary,
+            object_2: Temporary,
         };
 
         /// This enum indicates how the operation is going to be
@@ -2133,6 +2230,7 @@ const DeclGen = struct {
                 tmp: Temporary,
             ) !PreparedOperand {
                 const mod = dg.module;
+                const ip = &mod.intern_pool;
                 const ty_is_vector = tmp.ty.isVector(mod);
                 const value: PreparedOperand.Value = switch (tmp.value) {
                     .id => |id| switch (self) {
@@ -2148,8 +2246,19 @@ const DeclGen = struct {
                                 break :blk .{ .spv_vectorwise = id };
                             }
 
-                            const vector = try dg.constructVectorFromScalar(tmp.ty, id);
-                            break :blk .{ .spv_vectorwise = vector };
+                            const ip_index = try ip.get(mod.gpa, .{ .vector_type = .{
+                                .len = self.components(),
+                                .child = tmp.ty.toIntern(),
+                            } });
+                            const ty = Type.fromInterned(ip_index);
+
+                            const vector = try dg.constructVectorFromScalar(ty, id);
+
+                            return .{
+                                .dg = dg,
+                                .ty = ty,
+                                .value = .{ .spv_vectorwise = vector },
+                            };
                         },
                         .unrolled => blk: {
                             // Value may either be a Zig vector (SPIR-V array or vector), or a scalar.
@@ -2266,47 +2375,73 @@ const DeclGen = struct {
                         Vectorization.fromType(shift.shift.ty, dg),
                     );
                 },
-                .bit_and => |bin| {
+                .bit_and, .i_not_equal => |bin| {
                     return Vectorization.unify(
                         Vectorization.fromType(bin.lhs.ty, dg),
                         Vectorization.fromType(bin.rhs.ty, dg),
                     );
                 },
+                .select => |select| {
+                    return Vectorization.fromType(select.condition.ty, dg)
+                        .unify(Vectorization.fromType(select.object_1.ty, dg))
+                        .unify(Vectorization.fromType(select.object_2.ty, dg));
+                },
             }
+        }
+
+        fn scalarResultType(self: Operation, dg: *DeclGen) Type {
+            const mod = dg.module;
+            return switch (self) {
+                .u_convert => |convert| convert.dst_ty.scalarType(mod),
+                .srl, .sra, .sll => |shift| shift.base.ty.scalarType(mod),
+                .bit_and => |bin| bin.lhs.ty.scalarType(mod),
+                .i_not_equal => Type.bool,
+                .select => |select| select.object_1.ty.scalarType(mod),
+            };
         }
     };
 
     fn emit(self: *DeclGen, op: Operation) !Temporary {
+        const mod = self.module;
+        const ip = &mod.intern_pool;
+
         const v = op.vectorization(self);
         const ops = v.operations();
         const results = self.spv.allocIds(ops);
 
+        const scalar_result_ty = op.scalarResultType(self);
+        const op_result_ty = switch (v) {
+            .scalar, .unrolled => scalar_result_ty,
+            .spv_vectorizable => |n| blk: {
+                const ip_index = try ip.get(mod.gpa, .{ .vector_type = .{
+                    .len = n,
+                    .child = scalar_result_ty.toIntern(),
+                } });
+                break :blk Type.fromInterned(ip_index);
+            },
+        };
+        const op_result_ty_ref = try self.resolveType(op_result_ty, .direct);
+        const op_result_ty_id = self.typeId(op_result_ty_ref);
+
         switch (op) {
             .u_convert => |convert| {
-                const dst_ty_ref = try self.resolveType(convert.dst_ty, .direct);
-                const dst_ty_id = self.typeId(dst_ty_ref);
-
                 const src = try v.prepare(self, convert.src);
 
                 for (0..ops) |i| {
                     try self.func.body.emit(self.spv.gpa, .OpUConvert, .{
-                        .id_result_type = dst_ty_id,
+                        .id_result_type = op_result_ty_id,
                         .id_result = results.at(i),
                         .unsigned_value = try src.at(i),
                     });
                 }
-
-                return v.finalize(convert.dst_ty, dst_ty_ref, results);
             },
             .srl, .sra, .sll => |shift_op| {
-                const result_ty_id = self.typeId(shift_op.base.ty_ref);
-
                 const base = try v.prepare(self, shift_op.base);
                 const shift = try v.prepare(self, shift_op.shift);
 
                 for (0..ops) |i| {
                     const operands = .{
-                        .id_result_type = result_ty_id,
+                        .id_result_type = op_result_ty_id,
                         .id_result = results.at(i),
                         .base = try base.at(i),
                         .shift = try shift.at(i),
@@ -2318,19 +2453,16 @@ const DeclGen = struct {
                         else => unreachable,
                     }
                 }
-
-                return v.finalize(shift_op.base.ty, shift_op.base.ty_ref, results);
             },
             .bit_and => |bin| {
-                assert(bin.lhs.ty_ref == bin.rhs.ty_ref);
-                const result_ty_id = self.typeId(bin.lhs.ty_ref);
+                assert(bin.lhs.ty.scalarType(mod).toIntern() == bin.rhs.ty.scalarType(mod).toIntern());
 
                 const lhs = try v.prepare(self, bin.lhs);
                 const rhs = try v.prepare(self, bin.rhs);
 
                 for (0..ops) |i| {
                     const operands = .{
-                        .id_result_type = result_ty_id,
+                        .id_result_type = op_result_ty_id,
                         .id_result = results.at(i),
                         .operand_1 = try lhs.at(i),
                         .operand_2 = try rhs.at(i),
@@ -2341,10 +2473,60 @@ const DeclGen = struct {
                         else => unreachable,
                     }
                 }
+            },
+            .i_not_equal => |bin| {
+                assert(bin.lhs.ty.scalarType(mod).toIntern() == bin.rhs.ty.scalarType(mod).toIntern());
 
-                return v.finalize(bin.lhs.ty, bin.lhs.ty_ref, results);
+                const lhs = try v.prepare(self, bin.lhs);
+                const rhs = try v.prepare(self, bin.rhs);
+
+                for (0..ops) |i| {
+                    const operands = .{
+                        .id_result_type = op_result_ty_id,
+                        .id_result = results.at(i),
+                        .operand_1 = try lhs.at(i),
+                        .operand_2 = try rhs.at(i),
+                    };
+
+                    switch (op) {
+                        .i_not_equal => try self.func.body.emit(self.spv.gpa, .OpINotEqual, operands),
+                        else => unreachable,
+                    }
+                }
+            },
+            .select => |select| {
+                assert(select.condition.ty.scalarType(mod).zigTypeTag(mod) == .Bool);
+                assert(select.object_1.ty.scalarType(mod).toIntern() == select.object_2.ty.scalarType(mod).toIntern());
+
+                const condition = try v.prepare(self, select.condition);
+                const object_1 = try v.prepare(self, select.object_1);
+                const object_2 = try v.prepare(self, select.object_2);
+
+                for (0..ops) |i| {
+                    try self.func.body.emit(self.spv.gpa, .OpSelect, .{
+                        .id_result_type = op_result_ty_id,
+                        .id_result = results.at(i),
+                        .condition = try condition.at(i),
+                        .object_1 = try object_1.at(i),
+                        .object_2 = try object_2.at(i),
+                    });
+                }
             },
         }
+
+        const result_ty = switch (v) {
+            .scalar => scalar_result_ty,
+            .spv_vectorizable, .unrolled => |n| blk: {
+                const ip_index = try ip.get(mod.gpa, .{ .vector_type = .{
+                    .len = n,
+                    .child = scalar_result_ty.toIntern(),
+                } });
+                break :blk Type.fromInterned(ip_index);
+            },
+        };
+        const result_ty_ref = try self.resolveType(result_ty, .direct);
+
+        return v.finalize(result_ty, result_ty_ref, results);
     }
 
     /// The SPIR-V backend is not yet advanced enough to support the std testing infrastructure.
@@ -2603,39 +2785,62 @@ const DeclGen = struct {
         return result_id;
     }
 
+    fn intFromBool2(self: *DeclGen, condition: Temporary) !Temporary {
+        const mod = self.module;
+        const scalar_ty = try mod.intType(.unsigned, 1);
+        const scalar_ty_ref = try self.resolveType(scalar_ty, .indirect);
+
+        const zero_id = try self.constInt(scalar_ty_ref, 0);
+        const zero = Temporary.init(scalar_ty, scalar_ty_ref, zero_id);
+
+        const one_id = try self.constInt(scalar_ty_ref, 1);
+        const one = Temporary.init(scalar_ty, scalar_ty_ref, one_id);
+
+        return try self.emit(.{ .select = .{
+            .condition = condition,
+            .object_1 = one,
+            .object_2 = zero,
+        } });
+    }
+
     /// Convert representation from indirect (in memory) to direct (in 'register')
     /// This converts the argument type from resolveType(ty, .indirect) to resolveType(ty, .direct).
-    fn convertToDirect(self: *DeclGen, ty: Type, operand_id: IdRef) !IdRef {
+    fn convertToDirect(self: *DeclGen, ty: Type, operand_id: IdRef) error{ CodegenFail, OutOfMemory }!IdRef {
         const mod = self.module;
-        return switch (ty.zigTypeTag(mod)) {
-            .Bool => blk: {
-                const direct_bool_ty_ref = try self.resolveType(ty, .direct);
-                const indirect_bool_ty_ref = try self.resolveType(ty, .indirect);
+        const scalar_ty = ty.scalarType(mod);
+
+        switch (scalar_ty.zigTypeTag(mod)) {
+            .Bool => {
+                const indirect_ty_ref = try self.resolveType(ty, .indirect);
+                const operand = Temporary.init(ty, indirect_ty_ref, operand_id);
+                const indirect_bool_ty_ref = try self.resolveType(Type.bool, .indirect);
                 const zero_id = try self.constInt(indirect_bool_ty_ref, 0);
-                const result_id = self.spv.allocId();
-                try self.func.body.emit(self.spv.gpa, .OpINotEqual, .{
-                    .id_result_type = self.typeId(direct_bool_ty_ref),
-                    .id_result = result_id,
-                    .operand_1 = operand_id,
-                    .operand_2 = zero_id,
-                });
-                break :blk result_id;
+                const zero = Temporary.init(Type.bool, indirect_bool_ty_ref, zero_id);
+                const result = try self.emit(.{ .i_not_equal = .{
+                    .lhs = operand,
+                    .rhs = zero,
+                } });
+                return try result.finalize(self);
             },
-            else => operand_id,
-        };
+            else => return operand_id,
+        }
     }
 
     /// Convert representation from direct (in 'register) to direct (in memory)
     /// This converts the argument type from resolveType(ty, .direct) to resolveType(ty, .indirect).
     fn convertToIndirect(self: *DeclGen, ty: Type, operand_id: IdRef) !IdRef {
         const mod = self.module;
-        return switch (ty.zigTypeTag(mod)) {
-            .Bool => blk: {
-                const indirect_bool_ty_ref = try self.resolveType(ty, .indirect);
-                break :blk self.intFromBool(indirect_bool_ty_ref, operand_id);
+        const scalar_ty = ty.scalarType(mod);
+
+        switch (scalar_ty.zigTypeTag(mod)) {
+            .Bool => {
+                const ty_ref = try self.resolveType(ty, .direct);
+                const operand = Temporary.init(ty, ty_ref, operand_id);
+                const result = try self.intFromBool2(operand);
+                return try result.finalize(self);
             },
-            else => operand_id,
-        };
+            else => return operand_id,
+        }
     }
 
     fn extractField(self: *DeclGen, result_ty: Type, object: IdRef, field: u32) !IdRef {
@@ -2648,6 +2853,15 @@ const DeclGen = struct {
             .composite = object,
             .indexes = &indexes,
         });
+
+        // TODO(robin): This should be the object's type, not the result type... How do we
+        // get that here?
+        const mod = self.module;
+        if (result_ty.zigTypeTag(mod) == .Vector) {
+            // Result is already in direct representation
+            return result_id;
+        }
+
         // Convert bools; direct structs have their field types as indirect values.
         return try self.convertToDirect(result_ty, result_id);
     }
@@ -3040,7 +3254,11 @@ const DeclGen = struct {
             .composite_integer => unreachable, // TODO
             .strange_integer => switch (info.signedness) {
                 .unsigned => {
-                    const mask_value = if (info.bits == 64) 0xFFFF_FFFF_FFFF_FFFF else (@as(u64, 1) << @as(u6, @intCast(info.bits))) - 1;
+                    const mask_value = if (info.bits == 64)
+                        0xFFFF_FFFF_FFFF_FFFF
+                    else
+                        (@as(u64, 1) << @as(u6, @intCast(info.bits))) - 1;
+
                     const mask = Temporary.init(
                         value.ty,
                         value.ty_ref,
@@ -4317,8 +4535,7 @@ const DeclGen = struct {
                 defer self.gpa.free(elem_ids);
 
                 for (elements, 0..) |element, i| {
-                    const id = try self.resolve(element);
-                    elem_ids[i] = try self.convertToIndirect(result_ty.childType(mod), id);
+                    elem_ids[i] = try self.resolve(element);
                 }
 
                 return try self.constructVector(result_ty, elem_ids);
