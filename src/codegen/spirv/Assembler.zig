@@ -12,6 +12,7 @@ const IdResult = spec.IdResult;
 const StorageClass = spec.StorageClass;
 
 const SpvModule = @import("Module.zig");
+const Section = @import("Section.zig");
 
 /// Represents a token in the assembly template.
 const Token = struct {
@@ -128,14 +129,18 @@ const AsmValue = union(enum) {
     /// This result-value represents a type registered into the module's type system.
     ty: IdRef,
 
+    /// This is used to track extended instruction sets for later parsing.
+    extended_instruction_set: spec.InstructionSet,
+
     /// Retrieve the result-id of this AsmValue. Asserts that this AsmValue
     /// is of a variant that allows the result to be obtained (not an unresolved
     /// forward declaration, not in the process of being declared, etc).
-    pub fn resultId(self: AsmValue) IdRef {
+    pub fn resultId(self: AsmValue, assembler: *Assembler) !IdRef {
         return switch (self) {
             .just_declared, .unresolved_forward_reference => unreachable,
             .value => |result| result,
             .ty => |result| result,
+            .extended_instruction_set => |set| try assembler.spv.importInstructionSet(set),
         };
     }
 };
@@ -255,7 +260,7 @@ fn todo(self: *Assembler, comptime fmt: []const u8, args: anytype) Error {
 /// If this function returns `error.AssembleFail`, an explanatory
 /// error message has already been emitted into `self.errors`.
 fn processInstruction(self: *Assembler) !void {
-    const result: AsmValue = switch (self.inst.opcode) {
+    const maybe_result: ?AsmValue = switch (self.inst.opcode) {
         .OpEntryPoint => {
             return self.fail(0, "cannot export entry points via OpEntryPoint, export the kernel using callconv(.Kernel)", .{});
         },
@@ -265,16 +270,40 @@ fn processInstruction(self: *Assembler) !void {
             const set_tag = std.meta.stringToEnum(spec.InstructionSet, set_name) orelse {
                 return self.fail(set_name_offset, "unknown instruction set: {s}", .{set_name});
             };
-            break :blk .{ .value = try self.spv.importInstructionSet(set_tag) };
+
+            break :blk .{ .extended_instruction_set = set_tag };
+        },
+        .OpExtInst => blk: {
+            // For now, just process all OpExtInst instructions into
+            // the current function.
+            // This is not right for many instruction, but at least it gets us printf.
+            break :blk try self.processGenericInstructionIntoSection(&self.func.body, null);
+        },
+        .OpVariable => blk: {
+            const operands = self.inst.operands.items;
+            const storage_class: spec.StorageClass = @enumFromInt(operands[2].value);
+
+            switch (storage_class) {
+                .Function => {
+                    break :blk try self.processGenericInstructionIntoSection(&self.func.body, null);
+                },
+                .Generic => return self.fail(0, "Generic is not a valid storage class for OpVariable", .{}),
+                else => {},
+            }
+
+            const spv_decl_index = try self.spv.allocDecl(.global);
+            try self.spv.declareDeclDeps(spv_decl_index, &.{}); // TODO: We may need to get dependencies here...
+            try self.func.decl_deps.put(self.spv.gpa, spv_decl_index, {});
+            const id = self.spv.declPtr(spv_decl_index).result_id;
+            break :blk try self.processGenericInstructionIntoSection(&self.spv.sections.types_globals_constants, id);
         },
         else => switch (self.inst.opcode.class()) {
             .TypeDeclaration => try self.processTypeInstruction(),
-            else => if (try self.processGenericInstruction()) |result|
-                result
-            else
-                return,
+            else => try self.processGenericInstruction(),
         },
     };
+
+    const result = maybe_result orelse return;
 
     const result_ref = self.inst.result().?;
     switch (self.value_map.values()[result_ref]) {
@@ -323,10 +352,17 @@ fn processTypeInstruction(self: *Assembler) !AsmValue {
             const child_type = try self.resolveRefId(operands[1].ref_id);
             break :blk try self.spv.vectorType(operands[2].literal32, child_type);
         },
-        .OpTypeArray => {
-            // TODO: The length of an OpTypeArray is determined by a constant (which may be a spec constant),
-            // and so some consideration must be taken when entering this in the type system.
-            return self.todo("process OpTypeArray", .{});
+        .OpTypeArray => blk: {
+            const child_ty = try self.resolveRefId(operands[1].ref_id);
+            const len_id = try self.resolveRefId(operands[2].ref_id);
+
+            const result_id = self.spv.allocId();
+            try section.emit(self.spv.gpa, .OpTypeArray, .{
+                .id_result = result_id,
+                .element_type = child_ty,
+                .length = len_id,
+            });
+            break :blk result_id;
         },
         .OpTypePointer => blk: {
             const storage_class: StorageClass = @enumFromInt(operands[1].value);
@@ -391,7 +427,12 @@ fn processGenericInstruction(self: *Assembler) !?AsmValue {
         },
     };
 
-    var maybe_result_id: ?IdResult = null;
+    return try self.processGenericInstructionIntoSection(section, null);
+}
+
+fn processGenericInstructionIntoSection(self: *Assembler, section: *Section, maybe_given_result_id: ?IdResult) !?AsmValue {
+    const operands = self.inst.operands.items;
+    var maybe_result_id = maybe_given_result_id;
     const first_word = section.instructions.items.len;
     // At this point we're not quite sure how many operands this instruction is going to have,
     // so insert 0 and patch up the actual opcode word later.
@@ -409,14 +450,16 @@ fn processGenericInstruction(self: *Assembler) !?AsmValue {
                 section.writeDoubleWord(dword);
             },
             .result_id => {
-                maybe_result_id = self.spv.allocId();
+                if (maybe_result_id == null) {
+                    maybe_result_id = self.spv.allocId();
+                }
                 try section.ensureUnusedCapacity(self.spv.gpa, 1);
                 section.writeOperand(IdResult, maybe_result_id.?);
             },
             .ref_id => |index| {
-                const result = try self.resolveRef(index);
+                const result_id = try self.resolveRefId(index);
                 try section.ensureUnusedCapacity(self.spv.gpa, 1);
-                section.writeOperand(spec.IdRef, result.resultId());
+                section.writeOperand(spec.IdRef, result_id);
             },
             .string => |offset| {
                 const text = std.mem.sliceTo(self.inst.string_bytes.items[offset..], 0);
@@ -467,7 +510,7 @@ fn resolveRef(self: *Assembler, ref: AsmValue.Ref) !AsmValue {
 
 fn resolveRefId(self: *Assembler, ref: AsmValue.Ref) !IdRef {
     const value = try self.resolveRef(ref);
-    return value.resultId();
+    return value.resultId(self);
 }
 
 /// Attempt to parse an instruction into `self.inst`.
@@ -706,8 +749,7 @@ fn parseContextDependentNumber(self: *Assembler) !void {
     assert(self.inst.opcode == .OpConstant or self.inst.opcode == .OpSpecConstant);
 
     const tok = self.currentToken();
-    const result = try self.resolveRef(self.inst.operands.items[0].ref_id);
-    const result_id = result.resultId();
+    const result_id = try self.resolveRefId(self.inst.operands.items[0].ref_id);
     // We are going to cheat a little bit: The types we are interested in, int and float,
     // are added to the module and cached via self.spv.intType and self.spv.floatType. Therefore,
     // we can determine the width of these types by directly checking the cache.
