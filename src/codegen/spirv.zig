@@ -6474,7 +6474,7 @@ const DeclGen = struct {
             switch (result) {
                 .just_declared, .unresolved_forward_reference => unreachable,
                 .ty => return self.fail("cannot return spir-v type as value from assembly", .{}),
-                .value => |ref| return ref,
+                .value, .extended_instruction_set => return try result.resultId(&as),
             }
 
             // TODO: Multiple results
