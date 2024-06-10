@@ -1337,18 +1337,18 @@ const DeclGen = struct {
     /// The integer type that is returned by this function is the type that is used to perform
     /// actual operations (as well as store) a Zig type of a particular number of bits. To create
     /// a type with an exact size, use SpvModule.intType.
-    fn intType(self: *DeclGen, signedness: std.builtin.Signedness, bits: u16) !IdRef {
+    fn intType(self: *DeclGen, bits: u16) !IdRef {
         const backing_bits = self.backingIntBits(bits) orelse {
             // TODO: Integers too big for any native type are represented as "composite integers":
             // An array of largestSupportedIntBits.
-            return self.todo("Implement {s} composite int type of {} bits", .{ @tagName(signedness), bits });
+            return self.todo("Implement composite int type of {} bits", .{bits});
         };
 
-        // Kernel only supports unsigned ints.
-        if (self.getTarget().os.tag == .vulkan) {
-            return self.spv.intType(signedness, backing_bits);
-        }
-
+        // In SPIR-V, all integer operations apply to both signed and unsigned ints.
+        // In Kernel environments, signed integers are not allowed at all.
+        // In Shader environments, we can use the signed operations in unsigned integers
+        // to get the same operations. Therefore, simplify the backend by using unsigned
+        // integers everywhere.
         return self.spv.intType(.unsigned, backing_bits);
     }
 
@@ -1574,7 +1574,7 @@ const DeclGen = struct {
                     });
                     return result_id;
                 }
-                return try self.intType(int_info.signedness, int_info.bits);
+                return try self.intType(int_info.bits);
             },
             .Enum => {
                 const tag_ty = ty.intTagType(mod);
@@ -3718,7 +3718,6 @@ const DeclGen = struct {
     }
 
     fn airMulOverflow(self: *DeclGen, inst: Air.Inst.Index) !?IdRef {
-        const target = self.getTarget();
         const mod = self.module;
 
         const ty_pl = self.air.instructions.items(.data)[@intFromEnum(inst)].ty_pl;
@@ -3742,7 +3741,7 @@ const DeclGen = struct {
         // - Additionally, if info.bits != 32, we'll have to check the high bits
         //   of the result too.
 
-        const largest_int_bits: u16 = if (Target.spirv.featureSetHas(target.cpu.features, .Int64)) 64 else 32;
+        const largest_int_bits = self.largestSupportedIntBits();
         // If non-null, the number of bits that the multiplication should be performed in. If
         // null, we have to use wide multiplication.
         const maybe_op_ty_bits: ?u16 = switch (info.bits) {
