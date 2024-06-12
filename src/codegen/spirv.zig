@@ -343,27 +343,37 @@ const DeclGen = struct {
     /// scalar type. Otherwise, if its a vector, it refers to the vector's element type.
     const ArithmeticTypeInfo = struct {
         /// A classification of the inner type.
-        const Class = enum {
+        /// This enum is designed in a way that makes it easy to dispatch a particlar way to lower
+        /// an operation based on type type; for example, the path for softfloats and floats is different.
+        /// The paths for integers and strange integers is often the same (normalize() transparently
+        /// handles both, and that is usually the only place where they are differentiated), hence strange
+        /// integers are not a separate class.
+        const Class = union(enum) {
             /// A boolean.
             bool,
 
-            /// A regular, **native**, integer.
-            /// This is only returned when the backend supports this int as a native type (when
-            /// the relevant capability is enabled).
+            /// An Zig integer type lowered to a single SPIR-V integer. Note: This may be a "strange"
+            /// integer; an integer for which the backing type has more bits than the Zig type has.
             integer,
 
-            /// A regular float. These are all required to be natively supported. Floating points
-            /// for which the relevant capability is not enabled are not emulated.
+            /// A Zig float type lowered to a SPIR-V float. This class is only used for Zig types
+            /// that exactly match a SPIR-V float.
             float,
 
-            /// An integer of a 'strange' size (which' bit size is not the same as its backing
-            /// type. **Note**: this may **also** include power-of-2 integers for which the
-            /// relevant capability is not enabled), but still within the limits of the largest
-            /// natively supported integer type.
-            strange_integer,
+            /// A float which is not natively supported, but the backing integer type is. This
+            /// is for example used if f16 is not supported: it indicates that the backing type
+            /// will be an integer of size `bits`.
+            softfloat,
 
-            /// An integer with more bits than the largest natively supported integer type.
+            /// An integer which consists of multiple native words stored as an array.
+            /// Note: this type may also be "strange".
             composite_integer,
+
+            /// A float which is not natively supported, and the backing integer type is neither.
+            /// This type also consists of multiple native integers stored as an array.
+            /// This is for example used for f80 and f128. Note, this may also be "strange",
+            /// for example for f80 lowered to 2 64-bit integers.
+            composite_softfloat,
         };
 
         /// The number of bits in the inner type.
@@ -372,9 +382,15 @@ const DeclGen = struct {
 
         /// The number of bits required to store the type.
         /// For `integer` and `float`, this is equal to `bits`.
-        /// For `strange_integer` and `bool` this is the size of the backing integer.
-        /// For `composite_integer` this is 0 (TODO)
+        /// For `strange_integer`, `bool`, and `softfloat`, this is the size of the backing integer.
+        /// For `composite_integer` and `composite_softfloat` this is the total number of bits
+        ///   in all backing limbs combined.
         backing_bits: u16,
+
+        /// The number of limbs required to store the type.
+        /// This is in terms of `largestSupportedIntBits()`.
+        /// If 1, this type is not stored as an array (not composite).
+        limbs: u16,
 
         /// Null if this type is a scalar, or the length
         /// of the vector otherwise.
@@ -386,6 +402,24 @@ const DeclGen = struct {
         /// A classification of the inner type. These scenarios
         /// will all have to be handled slightly different.
         class: Class,
+
+        fn isStrange(self: ArithmeticTypeInfo) bool {
+            return self.bits != self.backing_bits;
+        }
+
+        fn isComposite(self: ArithmeticTypeInfo) bool {
+            assert(self.limbs != 0);
+            switch (self.class) {
+                .bool, .integer, .float, .softfloat => {
+                    assert(self.limbs == 1);
+                    return false;
+                },
+                .composite_integer, .composite_softfloat => {
+                    assert(self.limbs > 1);
+                    return true;
+                },
+            }
+        }
     };
 
     /// Data can be lowered into in two basic representations: indirect, which is when
@@ -578,17 +612,23 @@ const DeclGen = struct {
         self.current_block_label = label;
     }
 
+    const IntLoweringInfo = struct {
+        /// The TOTAL number of bits in the backing integer type(s).
+        backing_bits: u16,
+        /// The number of limbs of the backing integer type. If this is 1,
+        /// then the type should be lowered to the SPIR-V type directly.
+        /// Otherwise, its an array of this number of limbs.
+        limbs: u16,
+
+        fn isComposite(self: IntLoweringInfo) bool {
+            return self.limbs != 1;
+        }
+    };
+
     /// SPIR-V requires enabling specific integer sizes through capabilities, and so if they are not enabled, we need
-    /// to emulate them in other instructions/types. This function returns, given an integer bit width (signed or unsigned, sign
-    /// included), the width of the underlying type which represents it, given the enabled features for the current target.
-    /// If the result is `null`, the largest type the target platform supports natively is not able to perform computations using
-    /// that size. In this case, multiple elements of the largest type should be used.
-    /// The backing type will be chosen as the smallest supported integer larger or equal to it in number of bits.
-    /// The result is valid to be used with OpTypeInt.
-    /// TODO: The extension SPV_INTEL_arbitrary_precision_integers allows any integer size (at least up to 32 bits).
-    /// TODO: This probably needs an ABI-version as well (especially in combination with SPV_INTEL_arbitrary_precision_integers).
-    /// TODO: Should the result of this function be cached?
-    fn backingIntBits(self: *DeclGen, bits: u16) ?u16 {
+    /// to emulate them in other instructions/types.
+    /// This fucntion returns, given an integer bit width, a complete description of how to lower the type into SPIR-V.
+    fn intLoweringInfo(self: *DeclGen, bits: u16) IntLoweringInfo {
         const target = self.getTarget();
 
         // The backend will never be asked to compiler a 0-bit integer, so we won't have to handle those in this function.
@@ -604,17 +644,80 @@ const DeclGen = struct {
         };
 
         for (ints) |int| {
-            const has_feature = if (int.feature) |feature|
-                Target.spirv.featureSetHas(target.cpu.features, feature)
-            else
-                true;
-
-            if (bits <= int.bits and has_feature) {
-                return int.bits;
+            if (bits > int.bits) {
+                continue;
             }
+
+            if (int.feature) |feature| {
+                if (!Target.spirv.featureSetHas(target.cpu.features, feature)) {
+                    continue;
+                }
+            }
+
+            return .{
+                .backing_bits = int.bits,
+                .limbs = 1,
+            };
         }
 
-        return null;
+        const limb_bits = self.largestSupportedIntBits();
+        const limbs = std.math.divCeil(u16, bits, limb_bits) catch unreachable;
+        return .{
+            .backing_bits = limbs * limb_bits,
+            .limbs = limbs,
+        };
+    }
+
+    const FloatLoweringInfo = struct {
+        /// The TOTAL number of bits in the backing float or integer type(s).
+        backing_bits: u16,
+        /// The number of limbs in the backing type. If 1, then this lowered
+        /// directly into a SPIR-V float or integer. Otherwise, its an array
+        /// of this number of limbs.
+        limbs: u16,
+        /// Set when these float operations must be emulated. Always set if composite.
+        is_soft_float: bool,
+
+        fn isComposite(self: FloatLoweringInfo) bool {
+            return self.limbs != 1;
+        }
+    };
+
+    fn floatLoweringInfo(self: *DeclGen, bits: u16) FloatLoweringInfo {
+        const target = self.getTarget();
+        assert(bits != 0);
+
+        switch (bits) {
+            16 => if (Target.spirv.featureSetHas(target.cpu.features, .Float16)) {
+                return .{
+                    .backing_bits = 16,
+                    .limbs = 1,
+                    .is_soft_float = false,
+                };
+            },
+            32 => return .{
+                .backing_bits = 32,
+                .limbs = 1,
+                .is_soft_float = false,
+            },
+            64 => if (Target.spirv.featureSetHas(target.cpu.features, .Float64)) {
+                return .{
+                    .backing_bits = 64,
+                    .limbs = 1,
+                    .is_soft_float = false,
+                };
+            },
+            else => {},
+        }
+
+        const int_lowering_info = self.intLoweringInfo(bits);
+
+        // By default, emulate.
+        return .{
+            .backing_bits = int_lowering_info.backing_bits,
+            .limbs = int_lowering_info.limbs,
+            .is_soft_float = true,
+        };
     }
 
     /// Return the amount of bits in the largest supported integer type. This is either 32 (always supported), or 64 (if
@@ -629,13 +732,6 @@ const DeclGen = struct {
             64
         else
             32;
-    }
-
-    /// Checks whether the type is "composite int", an integer consisting of multiple native integers. These are represented by
-    /// arrays of largestSupportedIntBits().
-    /// Asserts `ty` is an integer.
-    fn isCompositeInt(self: *DeclGen, ty: Type) bool {
-        return self.backingIntBits(ty) == null;
     }
 
     /// Checks whether the type can be directly translated to SPIR-V vectors
@@ -673,43 +769,54 @@ const DeclGen = struct {
             scalar_ty = scalar_ty.intTagType(mod);
         }
         const vector_len = if (ty.isVector(mod)) ty.vectorLen(mod) else null;
-        return switch (scalar_ty.zigTypeTag(mod)) {
-            .Bool => ArithmeticTypeInfo{
-                .bits = 1, // Doesn't matter for this class.
-                .backing_bits = self.backingIntBits(1).?,
-                .vector_len = vector_len,
-                .signedness = .unsigned, // Technically, but doesn't matter for this class.
-                .class = .bool,
+        switch (scalar_ty.zigTypeTag(mod)) {
+            .Bool => {
+                const lowering_info = self.floatLoweringInfo(1);
+                return ArithmeticTypeInfo{
+                    .bits = 1,
+                    .backing_bits = lowering_info.backing_bits,
+                    .limbs = lowering_info.limbs,
+                    .vector_len = vector_len,
+                    .signedness = .unsigned, // Technically, but doesn't matter for this class.
+                    .class = .bool,
+                };
             },
-            .Float => ArithmeticTypeInfo{
-                .bits = scalar_ty.floatBits(target),
-                .backing_bits = scalar_ty.floatBits(target), // TODO: F80?
-                .vector_len = vector_len,
-                .signedness = .signed, // Technically, but doesn't matter for this class.
-                .class = .float,
+            .Float => {
+                const bits = scalar_ty.floatBits(target);
+                const lowering_info = self.floatLoweringInfo(bits);
+                return ArithmeticTypeInfo{
+                    .bits = bits,
+                    .backing_bits = lowering_info.backing_bits,
+                    .limbs = lowering_info.limbs,
+                    .vector_len = vector_len,
+                    .signedness = .signed, // Technically, but doesn't matter for this class.
+                    .class = if (lowering_info.isComposite())
+                        .composite_softfloat
+                    else if (lowering_info.is_soft_float)
+                        .softfloat
+                    else
+                        .float,
+                };
             },
-            .Int => blk: {
+            .Int => {
                 const int_info = scalar_ty.intInfo(mod);
-                // TODO: Maybe it's useful to also return this value.
-                const maybe_backing_bits = self.backingIntBits(int_info.bits);
-                break :blk ArithmeticTypeInfo{
+                const lowering_info = self.intLoweringInfo(int_info.bits);
+                return ArithmeticTypeInfo{
                     .bits = int_info.bits,
-                    .backing_bits = maybe_backing_bits orelse 0,
+                    .backing_bits = lowering_info.backing_bits,
+                    .limbs = lowering_info.limbs,
                     .vector_len = vector_len,
                     .signedness = int_info.signedness,
-                    .class = if (maybe_backing_bits) |backing_bits|
-                        if (backing_bits == int_info.bits)
-                            ArithmeticTypeInfo.Class.integer
-                        else
-                            ArithmeticTypeInfo.Class.strange_integer
+                    .class = if (lowering_info.isComposite())
+                        .composite_integer
                     else
-                        .composite_integer,
+                        .integer,
                 };
             },
             .Enum => unreachable,
             .Vector => unreachable,
             else => unreachable, // Unhandled arithmetic type
-        };
+        }
     }
 
     /// Emits a bool constant in a particular representation.
@@ -744,9 +851,9 @@ const DeclGen = struct {
         // TODO: Cache?
         const mod = self.module;
         const scalar_ty = ty.scalarType(mod);
-        const int_info = scalar_ty.intInfo(mod);
+        const int_info = ty.intInfo(mod);
         // Use backing bits so that negatives are sign extended
-        const backing_bits = self.backingIntBits(int_info.bits).?; // Assertion failure means big int
+        const backing_bits = self.intLoweringInfo(int_info.bits).backing_bits;
 
         const signedness: Signedness = switch (@typeInfo(@TypeOf(value))) {
             .Int => |int| int.signedness,
@@ -1333,23 +1440,20 @@ const DeclGen = struct {
         return try name.toOwnedSlice();
     }
 
-    /// Create an integer type suitable for storing at least 'bits' bits.
+    /// Create an integer type suitable for storing at least `bits` bits.
     /// The integer type that is returned by this function is the type that is used to perform
     /// actual operations (as well as store) a Zig type of a particular number of bits. To create
     /// a type with an exact size, use SpvModule.intType.
     fn intType(self: *DeclGen, bits: u16) !IdRef {
-        const backing_bits = self.backingIntBits(bits) orelse {
-            // TODO: Integers too big for any native type are represented as "composite integers":
-            // An array of largestSupportedIntBits.
-            return self.todo("Implement composite int type of {} bits", .{bits});
-        };
+        const lowering_info = self.intLoweringInfo(bits);
+        assert(!lowering_info.isComposite()); // TODO: Composite integers
 
         // In SPIR-V, all integer operations apply to both signed and unsigned ints.
         // In Kernel environments, signed integers are not allowed at all.
         // In Shader environments, we can use the signed operations in unsigned integers
         // to get the same operations. Therefore, simplify the backend by using unsigned
         // integers everywhere.
-        return self.spv.intType(.unsigned, backing_bits);
+        return self.spv.intType(.unsigned, lowering_info.backing_bits);
     }
 
     fn arrayType(self: *DeclGen, len: u32, child_ty: IdRef) !IdRef {
@@ -3410,9 +3514,9 @@ const DeclGen = struct {
 
         const info = self.arithmeticTypeInfo(result_ty);
         switch (info.class) {
-            .composite_integer => return self.todo("shift ops for composite integers", .{}),
-            .integer, .strange_integer => {},
-            .float, .bool => unreachable,
+            .composite_integer => unreachable, // TODO
+            .integer => {},
+            .bool, .float, .softfloat, .composite_softfloat => unreachable,
         }
 
         // Sometimes Zig doesn't make both of the arguments the same types here. SPIR-V expects that,
@@ -3452,7 +3556,7 @@ const DeclGen = struct {
                 .min => .f_min,
                 .max => .f_max,
             },
-            .integer, .strange_integer => switch (info.signedness) {
+            .integer => switch (info.signedness) {
                 .signed => switch (op) {
                     .min => .s_min,
                     .max => .s_max,
@@ -3462,7 +3566,7 @@ const DeclGen = struct {
                     .max => .u_max,
                 },
             },
-            .composite_integer => unreachable, // TODO
+            .softfloat, .composite_softfloat, .composite_integer => unreachable, // TODO
             .bool => unreachable,
         };
 
@@ -3481,21 +3585,27 @@ const DeclGen = struct {
         const mod = self.module;
         const ty = value.ty;
         switch (info.class) {
-            .integer, .bool, .float => return value,
+            .bool, .float, .softfloat, .composite_softfloat => return value,
             .composite_integer => unreachable, // TODO
-            .strange_integer => switch (info.signedness) {
-                .unsigned => {
-                    const mask_value = if (info.bits == 64) 0xFFFF_FFFF_FFFF_FFFF else (@as(u64, 1) << @as(u6, @intCast(info.bits))) - 1;
-                    const mask_id = try self.constInt(ty.scalarType(mod), mask_value, .direct);
-                    return try self.buildBinary(.bit_and, value, Temporary.init(ty.scalarType(mod), mask_id));
-                },
-                .signed => {
-                    // Shift left and right so that we can copy the sight bit that way.
-                    const shift_amt_id = try self.constInt(ty.scalarType(mod), info.backing_bits - info.bits, .direct);
-                    const shift_amt = Temporary.init(ty.scalarType(mod), shift_amt_id);
-                    const left = try self.buildBinary(.sll, value, shift_amt);
-                    return try self.buildBinary(.sra, left, shift_amt);
-                },
+            .integer => {},
+        }
+
+        if (!info.isStrange()) {
+            return value;
+        }
+
+        switch (info.signedness) {
+            .unsigned => {
+                const mask_value = if (info.bits == 64) 0xFFFF_FFFF_FFFF_FFFF else (@as(u64, 1) << @as(u6, @intCast(info.bits))) - 1;
+                const mask_id = try self.constInt(ty.scalarType(mod), mask_value, .direct);
+                return try self.buildBinary(.bit_and, value, Temporary.init(ty.scalarType(mod), mask_id));
+            },
+            .signed => {
+                // Shift left and right so that we can copy the sight bit that way.
+                const shift_amt_id = try self.constInt(ty.scalarType(mod), info.backing_bits - info.bits, .direct);
+                const shift_amt = Temporary.init(ty.scalarType(mod), shift_amt_id);
+                const left = try self.buildBinary(.sll, value, shift_amt);
+                return try self.buildBinary(.sra, left, shift_amt);
             },
         }
     }
@@ -3508,8 +3618,8 @@ const DeclGen = struct {
 
         const info = self.arithmeticTypeInfo(lhs.ty);
         switch (info.class) {
-            .composite_integer => unreachable, // TODO
-            .integer, .strange_integer => {
+            .softfloat, .composite_softfloat, .composite_integer => unreachable, // TODO
+            .integer => {
                 switch (info.signedness) {
                     .unsigned => {
                         const result = try self.buildBinary(.u_div, lhs, rhs);
@@ -3565,8 +3675,8 @@ const DeclGen = struct {
 
         const info = self.arithmeticTypeInfo(lhs.ty);
         switch (info.class) {
-            .composite_integer => unreachable, // TODO
-            .integer, .strange_integer => switch (info.signedness) {
+            .softfloat, .composite_softfloat, .composite_integer => unreachable, // TODO
+            .integer => switch (info.signedness) {
                 .unsigned => {
                     const result = try self.buildBinary(.u_div, lhs, rhs);
                     return try result.materialize(self);
@@ -3607,8 +3717,8 @@ const DeclGen = struct {
         const info = self.arithmeticTypeInfo(lhs.ty);
 
         const result = switch (info.class) {
-            .composite_integer => unreachable, // TODO
-            .integer, .strange_integer => switch (info.signedness) {
+            .softfloat, .composite_softfloat, .composite_integer => unreachable, // TODO
+            .integer => switch (info.signedness) {
                 .signed => try self.buildBinary(sop, lhs, rhs),
                 .unsigned => try self.buildBinary(uop, lhs, rhs),
             },
@@ -3630,11 +3740,11 @@ const DeclGen = struct {
 
     fn abs(self: *DeclGen, result_ty: Type, value: Temporary) !Temporary {
         const target = self.getTarget();
-        const operand_info = self.arithmeticTypeInfo(value.ty);
+        const info = self.arithmeticTypeInfo(value.ty);
 
-        switch (operand_info.class) {
+        switch (info.class) {
             .float => return try self.buildUnary(.f_abs, value),
-            .integer, .strange_integer => {
+            .integer => {
                 const abs_value = try self.buildUnary(.i_abs, value);
 
                 // TODO: We may need to bitcast the result to a uint
@@ -3645,7 +3755,7 @@ const DeclGen = struct {
 
                 return try self.normalize(abs_value, self.arithmeticTypeInfo(result_ty));
             },
-            .composite_integer => unreachable, // TODO
+            .composite_integer, .softfloat, .composite_softfloat => unreachable, // TODO
             .bool => unreachable,
         }
     }
@@ -3673,9 +3783,10 @@ const DeclGen = struct {
 
         const info = self.arithmeticTypeInfo(lhs.ty);
         switch (info.class) {
-            .composite_integer => unreachable, // TODO
-            .strange_integer, .integer => {},
-            .float, .bool => unreachable,
+            .composite_integer,
+            => unreachable, // TODO
+            .integer => {},
+            .bool, .float, .softfloat, .composite_softfloat => unreachable,
         }
 
         const sum = try self.buildBinary(add, lhs, rhs);
@@ -3731,8 +3842,8 @@ const DeclGen = struct {
         const info = self.arithmeticTypeInfo(lhs.ty);
         switch (info.class) {
             .composite_integer => unreachable, // TODO
-            .strange_integer, .integer => {},
-            .float, .bool => unreachable,
+            .integer => {},
+            .bool, .float, .softfloat, .composite_softfloat => unreachable,
         }
 
         // There are 3 cases which we have to deal with:
@@ -3910,8 +4021,8 @@ const DeclGen = struct {
         const info = self.arithmeticTypeInfo(base.ty);
         switch (info.class) {
             .composite_integer => unreachable, // TODO
-            .integer, .strange_integer => {},
-            .float, .bool => unreachable,
+            .integer => {},
+            .bool, .float, .softfloat, .composite_softfloat => unreachable,
         }
 
         // Sometimes Zig doesn't make both of the arguments the same types here. SPIR-V expects that,
@@ -3946,7 +4057,11 @@ const DeclGen = struct {
 
         const result_ty = self.typeOfIndex(inst);
         const info = self.arithmeticTypeInfo(result_ty);
-        assert(info.class == .float); // .mul_add is only emitted for floats
+        switch (info.class) {
+            .bool, .integer, .composite_integer => unreachable,
+            .float => {},
+            .softfloat, .composite_softfloat => unreachable, // TODO
+        }
 
         const result = try self.buildFma(a, b, c);
         return try result.materialize(self);
@@ -3965,8 +4080,8 @@ const DeclGen = struct {
         const info = self.arithmeticTypeInfo(operand.ty);
         switch (info.class) {
             .composite_integer => unreachable, // TODO
-            .integer, .strange_integer => {},
-            .float, .bool => unreachable,
+            .integer => {},
+            .bool, .float, .softfloat, .composite_softfloat => unreachable,
         }
 
         switch (target.os.tag) {
@@ -4047,7 +4162,7 @@ const DeclGen = struct {
                 .Xor => .OpLogicalNotEqual,
                 else => unreachable,
             },
-            .strange_integer, .integer => switch (reduce.operation) {
+            .integer => switch (reduce.operation) {
                 .And => .OpBitwiseAnd,
                 .Or => .OpBitwiseOr,
                 .Xor => .OpBitwiseXor,
@@ -4060,7 +4175,7 @@ const DeclGen = struct {
                 .Mul => .OpFMul,
                 else => unreachable,
             },
-            .composite_integer => unreachable, // TODO
+            .composite_integer, .softfloat, .composite_softfloat => unreachable, // TODO
         };
 
         for (1..len) |i| {
@@ -4395,7 +4510,6 @@ const DeclGen = struct {
 
         const info = self.arithmeticTypeInfo(scalar_ty);
         const pred: CmpPredicate = switch (info.class) {
-            .composite_integer => unreachable, // TODO
             .float => switch (op) {
                 .eq => .f_oeq,
                 .neq => .f_une,
@@ -4409,7 +4523,7 @@ const DeclGen = struct {
                 .neq => .l_ne,
                 else => unreachable,
             },
-            .integer, .strange_integer => switch (info.signedness) {
+            .integer => switch (info.signedness) {
                 .signed => switch (op) {
                     .eq => .i_eq,
                     .neq => .i_ne,
@@ -4427,6 +4541,7 @@ const DeclGen = struct {
                     .gte => .u_ge,
                 },
             },
+            .composite_integer, .softfloat, .composite_softfloat => unreachable, // TODO
         };
 
         return try self.buildCmp(pred, lhs, rhs);
@@ -4542,10 +4657,6 @@ const DeclGen = struct {
         const src_info = self.arithmeticTypeInfo(src.ty);
         const dst_info = self.arithmeticTypeInfo(dst_ty);
 
-        if (src_info.backing_bits == dst_info.backing_bits) {
-            return try src.materialize(self);
-        }
-
         const converted = try self.buildIntConvert(dst_ty, src);
 
         // Make sure to normalize the result if shrinking.
@@ -4586,10 +4697,10 @@ const DeclGen = struct {
     }
 
     fn floatFromInt(self: *DeclGen, result_ty: Type, operand_ty: Type, operand_id: IdRef) !IdRef {
-        const operand_info = self.arithmeticTypeInfo(operand_ty);
+        const info = self.arithmeticTypeInfo(operand_ty);
         const result_id = self.spv.allocId();
         const result_ty_id = try self.resolveType(result_ty, .direct);
-        switch (operand_info.signedness) {
+        switch (info.signedness) {
             .signed => try self.func.body.emit(self.spv.gpa, .OpConvertSToF, .{
                 .id_result_type = result_ty_id,
                 .id_result = result_id,
@@ -4660,9 +4771,9 @@ const DeclGen = struct {
 
         const result = switch (info.class) {
             .bool => try self.buildUnary(.l_not, operand),
-            .float => unreachable,
+            .float, .softfloat, .composite_softfloat => unreachable,
             .composite_integer => unreachable, // TODO
-            .strange_integer, .integer => blk: {
+            .integer => blk: {
                 const complement = try self.buildUnary(.bit_not, operand);
                 break :blk try self.normalize(complement, info);
             },
@@ -6164,19 +6275,15 @@ const DeclGen = struct {
         const cond_words: u32 = switch (cond_ty.zigTypeTag(mod)) {
             .Bool, .ErrorSet => 1,
             .Int => blk: {
-                const bits = cond_ty.intInfo(mod).bits;
-                const backing_bits = self.backingIntBits(bits) orelse {
-                    return self.todo("implement composite int switch", .{});
-                };
-                break :blk if (backing_bits <= 32) 1 else 2;
+                const info = self.arithmeticTypeInfo(cond_ty);
+                assert(!info.isComposite()); // TODO: Composite int switch
+                break :blk if (info.backing_bits <= 32) 1 else 2;
             },
             .Enum => blk: {
                 const int_ty = cond_ty.intTagType(mod);
-                const int_info = int_ty.intInfo(mod);
-                const backing_bits = self.backingIntBits(int_info.bits) orelse {
-                    return self.todo("implement composite int switch", .{});
-                };
-                break :blk if (backing_bits <= 32) 1 else 2;
+                const info = self.arithmeticTypeInfo(int_ty);
+                assert(!info.isComposite()); // TODO: Composite int switch
+                break :blk if (info.backing_bits <= 32) 1 else 2;
             },
             .Pointer => blk: {
                 cond_indirect = try self.intFromPtr(cond_indirect);
