@@ -1866,3 +1866,34 @@ test "@clz works on both vector and scalar inputs" {
     try std.testing.expectEqual(@as(u6, 31), a);
     try std.testing.expectEqual([_]u6{ 31, 31, 31, 31 }, b);
 }
+
+test "big integer relational operators" {
+    if (builtin.zig_backend == .stage2_wasm) return error.SkipZigTest; // TODO
+    if (builtin.zig_backend == .stage2_x86_64) return error.SkipZigTest; // TODO
+    if (builtin.zig_backend == .stage2_aarch64) return error.SkipZigTest; // TODO
+    if (builtin.zig_backend == .stage2_arm) return error.SkipZigTest; // TODO
+    if (builtin.zig_backend == .stage2_sparc64) return error.SkipZigTest; // TODO
+    if (builtin.zig_backend == .stage2_riscv64) return error.SkipZigTest;
+
+    try testCmp(u256, 10);
+    try testCmp(i512, -20);
+    try testCmp(i65535, -1000);
+}
+fn testCmp(comptime T: type, x: comptime_int) !void {
+    var a: T = x;
+    _ = &a;
+
+    try expect(a == x);
+    try expect(!(a == x + 1));
+    try expect(a != x - 1);
+    try expect(!(a != x));
+    try expect(!(a < x));
+    try expect(a < x + 1);
+    try expect(a < x + 100);
+    try expect(a > x - 1);
+    try expect(!(a > x));
+    try expect(a <= x);
+    try expect(!(a <= x - 1));
+    try expect(a >= x);
+    try expect(!(a >= x + 1));
+}

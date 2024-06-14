@@ -385,7 +385,7 @@ const DeclGen = struct {
         /// For `strange_integer`, `bool`, and `softfloat`, this is the size of the backing integer.
         /// For `composite_integer` and `composite_softfloat` this is the total number of bits
         ///   in all backing limbs combined.
-        backing_bits: u16,
+        backing_bits: u32,
 
         /// The number of limbs required to store the type.
         /// This is in terms of `largestSupportedIntBits()`.
@@ -614,7 +614,7 @@ const DeclGen = struct {
 
     const IntLoweringInfo = struct {
         /// The TOTAL number of bits in the backing integer type(s).
-        backing_bits: u16,
+        backing_bits: u32,
         /// The number of limbs of the backing integer type. If this is 1,
         /// then the type should be lowered to the SPIR-V type directly.
         /// Otherwise, its an array of this number of limbs.
@@ -663,20 +663,20 @@ const DeclGen = struct {
         const limb_bits = self.largestSupportedIntBits();
         const limbs = std.math.divCeil(u16, bits, limb_bits) catch unreachable;
         return .{
-            .backing_bits = limbs * limb_bits,
+            .backing_bits = @as(u32, limbs) * limb_bits,
             .limbs = limbs,
         };
     }
 
     const FloatLoweringInfo = struct {
         /// The TOTAL number of bits in the backing float or integer type(s).
-        backing_bits: u16,
+        backing_bits: u32,
         /// The number of limbs in the backing type. If 1, then this lowered
         /// directly into a SPIR-V float or integer. Otherwise, its an array
         /// of this number of limbs.
         limbs: u16,
         /// Set when these float operations must be emulated. Always set if composite.
-        is_soft_float: bool,
+        is_softfloat: bool,
 
         fn isComposite(self: FloatLoweringInfo) bool {
             return self.limbs != 1;
@@ -692,19 +692,19 @@ const DeclGen = struct {
                 return .{
                     .backing_bits = 16,
                     .limbs = 1,
-                    .is_soft_float = false,
+                    .is_softfloat = false,
                 };
             },
             32 => return .{
                 .backing_bits = 32,
                 .limbs = 1,
-                .is_soft_float = false,
+                .is_softfloat = false,
             },
             64 => if (Target.spirv.featureSetHas(target.cpu.features, .Float64)) {
                 return .{
                     .backing_bits = 64,
                     .limbs = 1,
-                    .is_soft_float = false,
+                    .is_softfloat = false,
                 };
             },
             else => {},
@@ -716,7 +716,7 @@ const DeclGen = struct {
         return .{
             .backing_bits = int_lowering_info.backing_bits,
             .limbs = int_lowering_info.limbs,
-            .is_soft_float = true,
+            .is_softfloat = true,
         };
     }
 
@@ -745,10 +745,13 @@ const DeclGen = struct {
         // by multiple SPIR-V values.
         const scalar_ty = ty.scalarType(mod);
         switch (scalar_ty.zigTypeTag(mod)) {
-            .Bool,
-            .Int,
-            .Float,
-            => {},
+            .Bool => {},
+            .Int, .Float => {
+                const info = self.arithmeticTypeInfo(ty);
+                // At some point we might support SPIR-V vectors of big values,
+                // but for now, just handle them as arrays of arrays.
+                if (info.isComposite()) return false;
+            },
             else => return false,
         }
 
@@ -792,7 +795,7 @@ const DeclGen = struct {
                     .signedness = .signed, // Technically, but doesn't matter for this class.
                     .class = if (lowering_info.isComposite())
                         .composite_softfloat
-                    else if (lowering_info.is_soft_float)
+                    else if (lowering_info.is_softfloat)
                         .softfloat
                     else
                         .float,
@@ -844,70 +847,109 @@ const DeclGen = struct {
         }
     }
 
-    /// Emits an integer constant.
-    /// This function, unlike SpvModule.constInt, takes care to bitcast
-    /// the value to an unsigned int first for Kernels.
-    fn constInt(self: *DeclGen, ty: Type, value: anytype, repr: Repr) !IdRef {
+    /// Emit a small-size integer constant. The `value` is interpreted
+    /// according to the type, and is asserted to fall in the right range.
+    /// This function accepts values within range -i64, +u64, but they will
+    /// be asserted to fall in the actual type's range.
+    fn constInt(self: *DeclGen, ty: Type, value: i65, repr: Repr) !IdRef {
         // TODO: Cache?
         const mod = self.module;
-        const scalar_ty = ty.scalarType(mod);
+        assert(!ty.isVector(mod)); // ty should always be a scalar.
         const int_info = ty.intInfo(mod);
-        // Use backing bits so that negatives are sign extended
-        const backing_bits = self.intLoweringInfo(int_info.bits).backing_bits;
 
-        const signedness: Signedness = switch (@typeInfo(@TypeOf(value))) {
-            .Int => |int| int.signedness,
-            .ComptimeInt => if (value < 0) .signed else .unsigned,
-            else => unreachable,
-        };
+        const lowering_info = self.intLoweringInfo(int_info.bits);
+        const backing_bits = lowering_info.backing_bits;
 
-        const bits: u64 = switch (signedness) {
-            .signed => @bitCast(@as(i64, @intCast(value))),
-            .unsigned => @as(u64, @intCast(value)),
-        };
+        const Lit = spec.LiteralContextDependentNumber;
+        const section = &self.spv.sections.types_globals_constants;
 
-        // Manually truncate the value to the right amount of bits.
-        const truncated_bits = if (backing_bits == 64)
-            bits
-        else
-            bits & (@as(u64, 1) << @intCast(backing_bits)) - 1;
-
-        const result_ty_id = try self.resolveType(scalar_ty, repr);
+        const result_ty_id = try self.resolveType(ty, repr);
         const result_id = self.spv.allocId();
 
-        const section = &self.spv.sections.types_globals_constants;
-        switch (backing_bits) {
-            0 => unreachable, // u0 is comptime
-            1...32 => try section.emit(self.spv.gpa, .OpConstant, .{
-                .id_result_type = result_ty_id,
-                .id_result = result_id,
-                .value = .{ .uint32 = @truncate(truncated_bits) },
-            }),
-            33...64 => try section.emit(self.spv.gpa, .OpConstant, .{
-                .id_result_type = result_ty_id,
-                .id_result = result_id,
-                .value = .{ .uint64 = truncated_bits },
-            }),
-            else => unreachable, // TODO: Large integer constants
-        }
+        if (lowering_info.isComposite()) {
+            const limb_bits = self.largestSupportedIntBits();
 
-        if (!ty.isVector(mod)) {
+            const bits: u64 = switch (int_info.signedness) {
+                .unsigned => @intCast(value),
+                .signed => @bitCast(@as(i64, @intCast(value))),
+            };
+
+            const ext_bits: u64 = switch (int_info.signedness) {
+                .unsigned => 0,
+                .signed => if (value < 0) std.math.maxInt(u64) else 0,
+            };
+
+            const limbs = try self.gpa.alloc(IdResult, lowering_info.limbs);
+            defer self.gpa.free(limbs);
+
+            switch (limb_bits) {
+                32 => {
+                    const low_word: u32 = @truncate(bits);
+                    const high_word: u32 = @truncate(bits >> 32);
+                    const ext_word: u32 = @truncate(ext_bits);
+
+                    limbs[0] = try self.constInt(Type.u32, low_word, .direct);
+                    if (limbs.len > 1) {
+                        limbs[1] = try self.constInt(Type.u32, high_word, .direct);
+                    }
+                    if (limbs.len > 2) {
+                        const ext_id = try self.constInt(Type.u32, ext_word, .direct);
+                        @memset(limbs[2..], ext_id);
+                    }
+                },
+                64 => {
+                    limbs[0] = try self.constInt(Type.u64, bits, .direct);
+                    if (limbs.len > 1) {
+                        const ext_id = try self.constInt(Type.u64, ext_bits, .direct);
+                        @memset(limbs[1..], ext_id);
+                    }
+                },
+                else => unreachable,
+            }
+
+            try section.emit(self.spv.gpa, .OpConstantComposite, .{
+                .id_result_type = result_ty_id,
+                .id_result = result_id,
+                .constituents = limbs,
+            });
+
             return result_id;
         }
 
-        const n = ty.vectorLen(mod);
-        const ids = try self.gpa.alloc(IdRef, n);
-        defer self.gpa.free(ids);
-        @memset(ids, result_id);
+        const lit: Lit = switch (backing_bits) {
+            inline 8, 16, 32 => |bits| switch (int_info.signedness) {
+                .unsigned => blk: {
+                    const T = @Type(.{ .Int = .{ .bits = bits, .signedness = .unsigned } });
+                    const casted_value: T = @intCast(value);
+                    break :blk .{ .uint32 = casted_value };
+                },
+                .signed => blk: {
+                    const T = @Type(.{ .Int = .{ .bits = bits, .signedness = .signed } });
+                    const casted_value: T = @intCast(value);
+                    break :blk .{ .int32 = casted_value };
+                },
+            },
+            inline 64 => |bits| switch (int_info.signedness) {
+                .unsigned => blk: {
+                    const T = @Type(.{ .Int = .{ .bits = bits, .signedness = .unsigned } });
+                    const casted_value: T = @intCast(value);
+                    break :blk .{ .uint64 = casted_value };
+                },
+                .signed => blk: {
+                    const T = @Type(.{ .Int = .{ .bits = bits, .signedness = .signed } });
+                    const casted_value: T = @intCast(value);
+                    break :blk .{ .int64 = casted_value };
+                },
+            },
+            else => unreachable, // Invalid SPIR-V type
+        };
 
-        const vec_ty_id = try self.resolveType(ty, repr);
-        const vec_result_id = self.spv.allocId();
-        try self.func.body.emit(self.spv.gpa, .OpCompositeConstruct, .{
-            .id_result_type = vec_ty_id,
-            .id_result = vec_result_id,
-            .constituents = ids,
+        try section.emit(self.spv.gpa, .OpConstant, .{
+            .id_result_type = result_ty_id,
+            .id_result = result_id,
+            .value = lit,
         });
-        return vec_result_id;
+        return result_id;
     }
 
     /// Construct a struct at runtime.
@@ -1446,14 +1488,29 @@ const DeclGen = struct {
     /// a type with an exact size, use SpvModule.intType.
     fn intType(self: *DeclGen, bits: u16) !IdRef {
         const lowering_info = self.intLoweringInfo(bits);
-        assert(!lowering_info.isComposite()); // TODO: Composite integers
+        if (lowering_info.isComposite()) {
+            const limb_ty_id = try self.spv.intType(.unsigned, self.largestSupportedIntBits());
+            return self.arrayType(lowering_info.limbs, limb_ty_id);
+        }
 
         // In SPIR-V, all integer operations apply to both signed and unsigned ints.
         // In Kernel environments, signed integers are not allowed at all.
         // In Shader environments, we can use the signed operations in unsigned integers
         // to get the same operations. Therefore, simplify the backend by using unsigned
         // integers everywhere.
-        return self.spv.intType(.unsigned, lowering_info.backing_bits);
+        return self.spv.intType(.unsigned, @intCast(lowering_info.backing_bits));
+    }
+
+    /// Create a float type suitable for storing at least `bits` bits. The returned type may
+    /// be a float, or it may be an integer or array of integers if the float type cannot be
+    /// natively represented in SPIR-V.
+    fn floatType(self: *DeclGen, bits: u16) !IdRef {
+        const lowering_info = self.floatLoweringInfo(bits);
+        if (lowering_info.isComposite() or lowering_info.is_softfloat) {
+            return try self.intType(bits);
+        }
+
+        return self.spv.floatType(bits);
     }
 
     fn arrayType(self: *DeclGen, len: u32, child_ty: IdRef) !IdRef {
@@ -1684,24 +1741,7 @@ const DeclGen = struct {
                 const tag_ty = ty.intTagType(mod);
                 return try self.resolveType(tag_ty, repr);
             },
-            .Float => {
-                // We can (and want) not really emulate floating points with other floating point types like with the integer types,
-                // so if the float is not supported, just return an error.
-                const bits = ty.floatBits(target);
-                const supported = switch (bits) {
-                    16 => Target.spirv.featureSetHas(target.cpu.features, .Float16),
-                    // 32-bit floats are always supported (see spec, 2.16.1, Data rules).
-                    32 => true,
-                    64 => Target.spirv.featureSetHas(target.cpu.features, .Float64),
-                    else => false,
-                };
-
-                if (!supported) {
-                    return self.fail("Floating point width of {} bits is not supported for the current SPIR-V feature set", .{bits});
-                }
-
-                return try self.spv.floatType(bits);
-            },
+            .Float => return try self.floatType(ty.floatBits(target)),
             .Array => {
                 const elem_ty = ty.childType(mod);
                 const elem_ty_id = try self.resolveType(elem_ty, .indirect);
@@ -2162,6 +2202,107 @@ const DeclGen = struct {
 
             return results;
         }
+
+        /// Deconstruct this type into something that can be used to randomly
+        /// access separate limbs in a reasonably efficient manner. This type
+        /// is in particular intended for when all limbs will be accessed.
+        fn limbs(self: Temporary, dg: *DeclGen) !LimbAccessor {
+            const mod = dg.module;
+            const id = switch (self.value) {
+                .singleton => |id| id,
+                .exploded_vector => unreachable, // Not used with composite numbers for now.
+            };
+
+            const info = dg.arithmeticTypeInfo(self.ty);
+            assert(info.isComposite());
+            const limb_ty = switch (dg.largestSupportedIntBits()) {
+                32 => Type.u32,
+                64 => Type.u64,
+                else => unreachable,
+            };
+            const limb_ty_id = try dg.resolveType(limb_ty, .direct);
+
+            if (!self.ty.isVector(mod)) {
+                const ids = dg.spv.allocIds(info.limbs);
+
+                for (0..info.limbs) |i| {
+                    try dg.func.body.emit(dg.spv.gpa, .OpCompositeExtract, .{
+                        .id_result_type = limb_ty_id,
+                        .id_result = ids.at(i),
+                        .composite = id,
+                        .indexes = &.{@intCast(i)},
+                    });
+                }
+
+                return .{
+                    .ty = self.ty,
+                    .limb_ty = limb_ty,
+                    .ids = ids,
+                    .vector_len = 1,
+                };
+            }
+
+            const n = self.ty.vectorLen(mod);
+            const ids = dg.spv.allocIds(n * info.limbs);
+            for (0..n) |lane| {
+                for (0..info.limbs) |i| {
+                    const j = lane + i * n;
+                    try dg.func.body.emit(dg.spv.gpa, .OpCompositeExtract, .{
+                        .id_result_type = limb_ty_id,
+                        .id_result = ids.at(j),
+                        .composite = id,
+                        .indexes = &.{@intCast(j)},
+                    });
+                }
+            }
+
+            const limb_vec_ty = try mod.vectorType(.{
+                .len = n,
+                .child = limb_ty.toIntern(),
+            });
+
+            return .{
+                .ty = self.ty,
+                .limb_ty = limb_vec_ty,
+                .ids = ids,
+                .vector_len = n,
+            };
+        }
+
+        const LimbAccessor = struct {
+            /// The original type. May be a vector.
+            ty: Type,
+            /// The type of a limb. Note: Vector type if the original type was a vector.
+            limb_ty: Type,
+            /// All limbs in a single range. This range is transposed so that we
+            /// can return an IdRange from at(): [Limbs][Lanes]Limb
+            ids: IdRange,
+            /// The number of lanes in this vector, if this type was derived from a vector.
+            /// Just here so that we don't need the DeclGen in at().
+            /// If 1, this isn't a vector.
+            vector_len: u32,
+
+            /// Get the limb at the specified index. If this LimbAccessor was created for a vector,
+            /// then this returns a vector of limbs.
+            fn at(self: LimbAccessor, index: usize) Temporary {
+                if (self.vector_len == 1) {
+                    return .{
+                        .ty = self.limb_ty,
+                        .value = .{ .singleton = self.ids.at(index) },
+                    };
+                }
+
+                return .{
+                    .ty = self.limb_ty,
+                    // Note: We can return an exploded vector here and let any vectorization be
+                    // handled by prepare().
+                    .value = .{ .exploded_vector = .{
+                        .base = self.ids.base + @as(u32, @intCast(index)) * self.vector_len,
+                        .len = self.vector_len,
+                    } },
+                };
+            }
+        };
     };
 
     /// Initialize a `Temporary` from an AIR value.
@@ -2170,6 +2311,15 @@ const DeclGen = struct {
             .ty = self.typeOf(inst),
             .value = .{ .singleton = try self.resolve(inst) },
         };
+    }
+
+    /// This utility function creates a temporary and initializes it with an
+    /// integer value. Because temporary operations generally broadcast, this
+    /// turns any vector `ty` into scalars and returns a constant for that.
+    fn temporaryConstInt(self: *DeclGen, ty: Type, value: anytype) !Temporary {
+        const mod = self.module;
+        const scalar_ty = ty.scalarType(mod);
+        return Temporary.init(scalar_ty, try self.constInt(scalar_ty, value, .direct));
     }
 
     /// This union describes how a particular operation should be vectorized.
@@ -3208,14 +3358,9 @@ const DeclGen = struct {
     }
 
     fn intFromBool2(self: *DeclGen, value: Temporary, result_ty: Type) !Temporary {
-        const zero_id = try self.constInt(result_ty, 0, .direct);
-        const one_id = try self.constInt(result_ty, 1, .direct);
-
-        return try self.buildSelect(
-            value,
-            Temporary.init(result_ty, one_id),
-            Temporary.init(result_ty, zero_id),
-        );
+        const zero = try self.temporaryConstInt(result_ty, 0);
+        const one = try self.temporaryConstInt(result_ty, 1);
+        return try self.buildSelect(value, one, zero);
     }
 
     /// Convert representation from indirect (in memory) to direct (in 'register')
@@ -3582,7 +3727,6 @@ const DeclGen = struct {
     /// All other values are returned unmodified (this makes strange integer
     /// wrapping easier to use in generic operations).
     fn normalize(self: *DeclGen, value: Temporary, info: ArithmeticTypeInfo) !Temporary {
-        const mod = self.module;
         const ty = value.ty;
         switch (info.class) {
             .bool, .float, .softfloat, .composite_softfloat => return value,
@@ -3597,13 +3741,12 @@ const DeclGen = struct {
         switch (info.signedness) {
             .unsigned => {
                 const mask_value = if (info.bits == 64) 0xFFFF_FFFF_FFFF_FFFF else (@as(u64, 1) << @as(u6, @intCast(info.bits))) - 1;
-                const mask_id = try self.constInt(ty.scalarType(mod), mask_value, .direct);
-                return try self.buildBinary(.bit_and, value, Temporary.init(ty.scalarType(mod), mask_id));
+                const mask = try self.temporaryConstInt(ty, mask_value);
+                return try self.buildBinary(.bit_and, value, mask);
             },
             .signed => {
                 // Shift left and right so that we can copy the sight bit that way.
-                const shift_amt_id = try self.constInt(ty.scalarType(mod), info.backing_bits - info.bits, .direct);
-                const shift_amt = Temporary.init(ty.scalarType(mod), shift_amt_id);
+                const shift_amt = try self.temporaryConstInt(ty, info.backing_bits - info.bits);
                 const left = try self.buildBinary(.sll, value, shift_amt);
                 return try self.buildBinary(.sra, left, shift_amt);
             },
@@ -3635,7 +3778,7 @@ const DeclGen = struct {
                 const div = try self.buildBinary(.s_div, lhs, rhs);
                 const rem = try self.buildBinary(.s_rem, lhs, rhs);
 
-                const zero = Temporary.init(lhs.ty, try self.constInt(lhs.ty, 0, .direct));
+                const zero = try self.temporaryConstInt(lhs.ty, 0);
 
                 const rem_is_not_zero = try self.buildCmp(.i_ne, rem, zero);
 
@@ -3812,7 +3955,7 @@ const DeclGen = struct {
             // = (rhs < 0) == (value < lhs)
             // = (rhs < 0) == (lhs > value)
             .signed => blk: {
-                const zero = Temporary.init(rhs.ty, try self.constInt(rhs.ty, 0, .direct));
+                const zero = try self.temporaryConstInt(rhs.ty, 0);
                 const rhs_lt_zero = try self.buildCmp(.s_lt, rhs, zero);
                 const result_gt_lhs = try self.buildCmp(scmp, lhs, result);
                 break :blk try self.buildCmp(.l_eq, rhs_lt_zero, result_gt_lhs);
@@ -3876,11 +4019,11 @@ const DeclGen = struct {
                     const result = try self.normalize(low_bits, info);
 
                     // Shift the result bits away to get the overflow bits.
-                    const shift = Temporary.init(full_result.ty, try self.constInt(full_result.ty, info.bits, .direct));
+                    const shift = try self.temporaryConstInt(full_result.ty, info.bits);
                     const overflow = try self.buildBinary(.srl, full_result, shift);
 
                     // Directly check if its zero in the op_ty without converting first.
-                    const zero = Temporary.init(full_result.ty, try self.constInt(full_result.ty, 0, .direct));
+                    const zero = try self.temporaryConstInt(full_result.ty, 0);
                     const overflowed = try self.buildCmp(.i_ne, zero, overflow);
 
                     break :blk .{ result, overflowed };
@@ -3894,7 +4037,7 @@ const DeclGen = struct {
                 // Overflow happened if the high-bits of the result are non-zero OR if the
                 // high bits of the low word of the result (those outside the range of the
                 // int) are nonzero.
-                const zero = Temporary.init(lhs.ty, try self.constInt(lhs.ty, 0, .direct));
+                const zero = try self.temporaryConstInt(lhs.ty, 0);
                 const high_overflowed = try self.buildCmp(.i_ne, zero, high_bits);
 
                 // If no overflow bits in low_bits, no extra work needs to be done.
@@ -3903,7 +4046,7 @@ const DeclGen = struct {
                 }
 
                 // Shift the result bits away to get the overflow bits.
-                const shift = Temporary.init(lhs.ty, try self.constInt(lhs.ty, info.bits, .direct));
+                const shift = try self.temporaryConstInt(lhs.ty, info.bits);
                 const low_overflow = try self.buildBinary(.srl, low_bits, shift);
                 const low_overflowed = try self.buildCmp(.i_ne, zero, low_overflow);
 
@@ -3922,7 +4065,7 @@ const DeclGen = struct {
                 // overflow should be -1 when
                 //   (lhs > 0 && rhs < 0) || (lhs < 0 && rhs > 0)
 
-                const zero = Temporary.init(lhs.ty, try self.constInt(lhs.ty, 0, .direct));
+                const zero = try self.temporaryConstInt(lhs.ty, 0);
                 const lhs_negative = try self.buildCmp(.s_lt, lhs, zero);
                 const rhs_negative = try self.buildCmp(.s_lt, rhs, zero);
                 const lhs_positive = try self.buildCmp(.s_gt, lhs, zero);
@@ -3951,13 +4094,13 @@ const DeclGen = struct {
                     // bit for the expceted overflow bits.
                     // To do that, shift out everything bit the sign bit and
                     // then check what remains.
-                    const shift = Temporary.init(full_result.ty, try self.constInt(full_result.ty, info.bits - 1, .direct));
+                    const shift = try self.temporaryConstInt(full_result.ty, info.bits - 1);
                     // Use SRA so that any sign bits are duplicated. Now we can just check if ALL bits are set
                     // for negative cases.
                     const overflow = try self.buildBinary(.sra, full_result, shift);
 
-                    const long_all_set = Temporary.init(full_result.ty, try self.constInt(full_result.ty, -1, .direct));
-                    const long_zero = Temporary.init(full_result.ty, try self.constInt(full_result.ty, 0, .direct));
+                    const long_all_set = try self.temporaryConstInt(full_result.ty, -1);
+                    const long_zero = try self.temporaryConstInt(full_result.ty, 0);
                     const mask = try self.buildSelect(expected_overflow_bit, long_all_set, long_zero);
 
                     const overflowed = try self.buildCmp(.i_ne, mask, overflow);
@@ -3970,7 +4113,7 @@ const DeclGen = struct {
                 // Truncate result if required.
                 const result = try self.normalize(low_bits, info);
 
-                const all_set = Temporary.init(lhs.ty, try self.constInt(lhs.ty, -1, .direct));
+                const all_set = try self.temporaryConstInt(lhs.ty, -1);
                 const mask = try self.buildSelect(expected_overflow_bit, all_set, zero);
 
                 // Like with unsigned, overflow happened if high_bits are not the ones we expect,
@@ -3986,7 +4129,7 @@ const DeclGen = struct {
                 }
 
                 // Shift the result bits away to get the overflow bits.
-                const shift = Temporary.init(lhs.ty, try self.constInt(lhs.ty, info.bits - 1, .direct));
+                const shift = try self.temporaryConstInt(lhs.ty, info.bits - 1);
                 // Use SRA so that any sign bits are duplicated. Now we can just check if ALL bits are set
                 // for negative cases.
                 const low_overflow = try self.buildBinary(.sra, low_bits, shift);
@@ -4541,10 +4684,83 @@ const DeclGen = struct {
                     .gte => .u_ge,
                 },
             },
-            .composite_integer, .softfloat, .composite_softfloat => unreachable, // TODO
+            .composite_integer => return switch (op) {
+                .eq => try self.cmpEqCompositeInt(lhs, rhs, info, .i_eq, .l_and),
+                .neq => try self.cmpEqCompositeInt(lhs, rhs, info, .i_ne, .l_or),
+                .lt => try self.cmpRelCompositeInt(lhs, rhs, info, .s_lt, .u_lt, false),
+                .lte => try self.cmpRelCompositeInt(lhs, rhs, info, .s_lt, .u_lt, true),
+                .gt => try self.cmpRelCompositeInt(lhs, rhs, info, .s_gt, .u_gt, false),
+                .gte => try self.cmpRelCompositeInt(lhs, rhs, info, .s_gt, .u_gt, true),
+            },
+            .softfloat, .composite_softfloat => unreachable, // TODO
         };
 
         return try self.buildCmp(pred, lhs, rhs);
+    }
+
+    fn cmpEqCompositeInt(
+        self: *DeclGen,
+        lhs: Temporary,
+        rhs: Temporary,
+        info: ArithmeticTypeInfo,
+        eq_op: CmpPredicate,
+        reduce_op: BinaryOp,
+    ) !Temporary {
+        // result = lhs[0] != rhs[0] || lhs[1] != rhs[1] || ...
+        // Assume lhs and rhs are normalized as usual.
+
+        const lhs_limbs = try lhs.limbs(self);
+        const rhs_limbs = try rhs.limbs(self);
+
+        var result = try self.buildCmp(eq_op, lhs_limbs.at(0), rhs_limbs.at(0));
+        for (1..info.limbs) |i| {
+            const limb_eq = try self.buildCmp(eq_op, lhs_limbs.at(i), rhs_limbs.at(i));
+            result = try self.buildBinary(reduce_op, result, limb_eq);
+        }
+        return result;
+    }
+
+    fn cmpRelCompositeInt(
+        self: *DeclGen,
+        lhs: Temporary,
+        rhs: Temporary,
+        info: ArithmeticTypeInfo,
+        scmp: CmpPredicate,
+        ucmp: CmpPredicate,
+        test_equal: bool,
+    ) !Temporary {
+        //                                             lhs[0] < rhs[0]
+        // ||                     (lhs[0] == rhs[0] && lhs[1] < rhs[1])
+        // || (lhs[0] == rhs[0] && lhs[1] == rhs[1] && lhs[2] < rhs[2])
+        // || ...
+        // Use a running sum for the equalities.
+        // Signed comparison only requires signed comparison for the first element:
+        // signed a < b is the same as unsigned (a + 0x80...0 < b + 0x80...0), and
+        // thats just signed comparison for the first word.
+        const lhs_limbs = try lhs.limbs(self);
+        const rhs_limbs = try rhs.limbs(self);
+
+        const first_cmp = switch (info.signedness) {
+            .unsigned => ucmp,
+            .signed => scmp,
+        };
+        var rel = try self.buildCmp(first_cmp, lhs_limbs.at(0), rhs_limbs.at(0));
+        var eq = try self.buildCmp(.i_eq, lhs_limbs.at(0), rhs_limbs.at(0));
+
+        for (0..info.limbs) |i| {
+            const limb_rel = try self.buildCmp(ucmp, lhs_limbs.at(i), rhs_limbs.at(i));
+            const limb_rel_eq = try self.buildBinary(.l_and, eq, limb_rel);
+            rel = try self.buildBinary(.l_or, rel, limb_rel_eq);
+            if (i != info.limbs - 1 and !test_equal) {
+                eq = try self.buildCmp(ucmp, lhs_limbs.at(i), rhs_limbs.at(i));
+            }
+        }
+
+        if (test_equal) {
+            rel = try self.buildBinary(.l_or, rel, eq);
+        }
+
+        return rel;
     }
 
     fn airCmp(
@@ -5300,9 +5516,8 @@ const DeclGen = struct {
         const base_ptr_int = base_ptr_int: {
             if (field_offset == 0) break :base_ptr_int field_ptr_int;
 
-            const field_offset_id = try self.constInt(Type.usize, field_offset, .direct);
             const field_ptr_tmp = Temporary.init(Type.usize, field_ptr_int);
-            const field_offset_tmp = Temporary.init(Type.usize, field_offset_id);
+            const field_offset_tmp = try self.temporaryConstInt(Type.usize, field_offset);
             const result = try self.buildBinary(.i_sub, field_ptr_tmp, field_offset_tmp);
             break :base_ptr_int try result.materialize(self);
         };
