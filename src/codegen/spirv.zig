@@ -2132,7 +2132,9 @@ const DeclGen = struct {
         value: Temporary.Value,
 
         const Value = union(enum) {
+            /// A single result-id, which usually just represents the value in a packed manner.
             singleton: IdResult,
+            /// A vector which' lanes are all separated into separate IDs.
             exploded_vector: IdRange,
         };
 
@@ -2303,6 +2305,98 @@ const DeclGen = struct {
                 };
             }
         };
+    };
+
+    /// This type is used to construct a composite integer as
+    /// part of some operation.
+    const WipCompositeInt = struct {
+        result_ty: Type,
+        info: ArithmeticTypeInfo,
+        /// IDs of the limbs. Index 0 is least significant.
+        /// Note: May be an array of vectors.
+        limbs: []Temporary,
+
+        fn init(result_ty: Type, dg: *DeclGen) !WipCompositeInt {
+            const info = dg.arithmeticTypeInfo(result_ty);
+            const limbs = try dg.gpa.alloc(Temporary, info.limbs);
+            return .{
+                .result_ty = result_ty,
+                .info = info,
+                .limbs = limbs,
+            };
+        }
+
+        fn deinit(self: *WipCompositeInt, dg: *DeclGen) void {
+            dg.gpa.free(self.limbs);
+        }
+
+        fn normalize(self: WipCompositeInt, dg: *DeclGen) !void {
+            var info = dg.arithmeticTypeInfo(self.limbs[0].ty);
+            // Cheekily change the number of bits in the final limb
+            // to the actual number. This saves creating a custom
+            // integer type to represent the limb...
+            info.bits = @intCast(info.bits - (self.info.backing_bits - self.info.bits));
+            self.limbs[self.limbs.len - 1] = try dg.normalize(self.limbs[self.limbs.len - 1], info);
+        }
+
+        /// Turn this WIP composite int into a big integer or vector
+        /// of big integers.
+        fn finalize(self: WipCompositeInt, dg: *DeclGen) !Temporary {
+            const vector_len = self.info.vector_len orelse {
+                // Scalar big integer: construct a simple array.
+                const ids = try dg.gpa.alloc(IdRef, self.limbs.len);
+                defer dg.gpa.free(ids);
+                for (self.limbs, ids) |limb, *id| {
+                    id.* = try limb.materialize(dg);
+                }
+                const result_ty_id = try dg.resolveType(self.result_ty, .direct);
+                const result_id = dg.spv.allocId();
+                try dg.func.body.emit(dg.spv.gpa, .OpCompositeConstruct, .{
+                    .id_result_type = result_ty_id,
+                    .id_result = result_id,
+                    .constituents = ids,
+                });
+                return Temporary.init(self.result_ty, result_id);
+            };
+
+            // Vector big integer: construct an array of [Lanes][Limbs]Limb.
+            const limb_ranges = try dg.gpa.alloc(IdRange, self.limbs.len);
+            defer dg.gpa.free(limb_ranges);
+
+            for (self.limbs, limb_ranges) |limb, *range| {
+                range.* = try limb.explode(dg);
+            }
+
+            const lanes = try dg.gpa.alloc(IdRef, vector_len);
+            defer dg.gpa.free(lanes);
+
+            const ids = try dg.gpa.alloc(IdRef, self.limbs.len);
+            defer dg.gpa.free(ids);
+
+            const lane_ty_id = try dg.resolveType(self.result_ty.scalarType(dg.module), .direct);
+
+            for (lanes, 0..) |*lane, i| {
+                for (limb_ranges, ids) |range, *id| {
+                    id.* = range.at(i);
+                }
+                const lane_id = dg.spv.allocId();
+                try dg.func.body.emit(dg.spv.gpa, .OpCompositeConstruct, .{
+                    .id_result_type = lane_ty_id,
+                    .id_result = lane_id,
+                    .constituents = ids,
+                });
+                lane.* = lane_id;
+            }
+
+            const result_ty_id = try dg.resolveType(self.result_ty, .direct);
+            const result_id = dg.spv.allocId();
+            try dg.func.body.emit(dg.spv.gpa, .OpCompositeConstruct, .{
+                .id_result_type = result_ty_id,
+                .id_result = result_id,
+                .constituents = lanes,
+            });
+            return Temporary.init(self.result_ty, result_id);
+        }
     };
 
     /// Initialize a `Temporary` from an AIR value.
@@ -3730,7 +3824,7 @@ const DeclGen = struct {
         const ty = value.ty;
         switch (info.class) {
             .bool, .float, .softfloat, .composite_softfloat => return value,
-            .composite_integer => unreachable, // TODO
+            .composite_integer => unreachable, // Use WipCompositeInt.normalize()
             .integer => {},
         }
 
@@ -4988,7 +5082,16 @@ const DeclGen = struct {
         const result = switch (info.class) {
             .bool => try self.buildUnary(.l_not, operand),
             .float, .softfloat, .composite_softfloat => unreachable,
-            .composite_integer => unreachable, // TODO
+            .composite_integer => blk: {
+                const limbs = try operand.limbs(self);
+                var result = try WipCompositeInt.init(result_ty, self);
+                defer result.deinit(self);
+                for (result.limbs, 0..) |*limb, i| {
+                    limb.* = try self.buildUnary(.bit_not, limbs.at(i));
+                }
+                try result.normalize(self);
+                break :blk try result.finalize(self);
+            },
             .integer => blk: {
                 const complement = try self.buildUnary(.bit_not, operand);
                 break :blk try self.normalize(complement, info);
