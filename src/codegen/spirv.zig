@@ -4,6 +4,7 @@ const Target = std.Target;
 const log = std.log.scoped(.codegen);
 const assert = std.debug.assert;
 const Signedness = std.builtin.Signedness;
+const BigIntConst = std.math.big.int.Const;
 
 const Module = @import("../Module.zig");
 const Decl = Module.Decl;
@@ -952,6 +953,71 @@ const DeclGen = struct {
         return result_id;
     }
 
+    fn constIntBig(self: *DeclGen, ty: Type, value: BigIntConst, repr: Repr) !IdRef {
+        const mod = self.module;
+        // Non-composite integers are always <= 64 bits (signed or unsigned)
+        // Avoid allocating by falling back to the other lowering function.
+        blk: {
+            const int = value.to(i65) catch break :blk;
+            return try self.constInt(ty, int, repr);
+        }
+
+        const int_info = ty.intInfo(mod);
+        const lowering_info = self.intLoweringInfo(int_info.bits);
+
+        const limb_bits = self.largestSupportedIntBits();
+        const limb_ty = switch (limb_bits) {
+            32 => Type.u32,
+            64 => Type.u64,
+            else => unreachable,
+        };
+        const limb_ty_id = try self.resolveType(limb_ty, .direct);
+
+        const Lit = spec.LiteralContextDependentNumber;
+        const section = &self.spv.sections.types_globals_constants;
+
+        switch (limb_bits) {
+            inline 32, 64 => |bits| {
+                const Limb = @Type(.{ .Int = .{ .bits = bits, .signedness = .unsigned } });
+                const limbs = try self.gpa.alloc(Limb, lowering_info.limbs);
+                defer self.gpa.free(limbs);
+
+                // Just write the value in the current CPUs endianness to turn it into the right limb type.
+                // Note that this function already does the right sign extension for for strange big integers.
+                value.writeTwosComplement(std.mem.sliceAsBytes(limbs), @import("builtin").cpu.arch.endian());
+
+                const ids = try self.gpa.alloc(IdRef, lowering_info.limbs);
+                defer self.gpa.free(ids);
+
+                for (limbs, ids) |limb, *id| {
+                    const lit: Lit = switch (bits) {
+                        32 => .{ .uint32 = limb },
+                        64 => .{ .uint64 = limb },
+                        else => unreachable,
+                    };
+
+                    id.* = self.spv.allocId();
+                    try section.emit(self.spv.gpa, .OpConstant, .{
+                        .id_result_type = limb_ty_id,
+                        .id_result = id.*,
+                        .value = lit,
+                    });
+                }
+
+                const result_ty_id = try self.resolveType(ty, repr);
+                const result_id = self.spv.allocId();
+                try section.emit(self.spv.gpa, .OpConstantComposite, .{
+                    .id_result_type = result_ty_id,
+                    .id_result = result_id,
+                    .constituents = ids,
+                });
+
+                return result_id;
+            },
+            else => unreachable,
+        }
+    }
+
     /// Construct a struct at runtime.
     /// ty must be a struct type.
     /// Constituents should be in `indirect` representation (as the elements of a struct should be).
@@ -1086,11 +1152,10 @@ const DeclGen = struct {
                     .false, .true => break :cache try self.constBool(val.toBool(), repr),
                 },
                 .int => {
-                    if (ty.isSignedInt(mod)) {
-                        break :cache try self.constInt(ty, val.toSignedInt(mod), repr);
-                    } else {
-                        break :cache try self.constInt(ty, val.toUnsignedInt(mod), repr);
-                    }
+                    const BigIntSpace = InternPool.Key.Int.Storage.BigIntSpace;
+                    var space: BigIntSpace = undefined;
+                    const int = val.toBigInt(&space, mod);
+                    break :cache try self.constIntBig(ty, int, repr);
                 },
                 .float => {
                     const lit: spec.LiteralContextDependentNumber = switch (ty.floatBits(target)) {
