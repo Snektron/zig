@@ -9762,6 +9762,16 @@ fn builtinCall(
             });
             return rvalue(gz, ri, result, node);
         },
+
+        .barrier => {
+            const barrier_options_ty = try gz.addBuiltinValue(node, .barrier_options);
+            const options = try comptimeExpr(gz, scope, .{ .rl = .{ .coerced_ty = barrier_options_ty } }, params[0], .barrier_options);
+            _ = try gz.addExtendedPayload(.barrier, Zir.Inst.UnNode{
+                .node = gz.nodeIndexToRelative(node),
+                .operand = options,
+            });
+            return rvalue(gz, ri, .void_value, node);
+        },
     }
 }
 fn builtinReify(

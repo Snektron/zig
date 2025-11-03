@@ -919,6 +919,10 @@ pub const Inst = struct {
         /// Operand is unused and set to Ref.none
         work_group_id,
 
+        /// Implements the @barrier builtin.
+        /// Uses the `barrier` field.
+        barrier,
+
         pub fn fromCmpOp(op: std.math.CompareOperator, optimized: bool) Tag {
             switch (op) {
                 .lt => return if (optimized) .cmp_lt_optimized else .cmp_lt,
@@ -1216,6 +1220,7 @@ pub const Inst = struct {
             locality: u2,
             cache: std.builtin.PrefetchOptions.Cache,
         },
+        barrier: std.builtin.BarrierOptions,
         reduce: struct {
             operand: Ref,
             operation: std.builtin.ReduceOp,
@@ -1688,6 +1693,7 @@ pub fn typeOfIndex(air: *const Air, inst: Air.Inst.Index, ip: *const InternPool)
         .memmove,
         .set_union_tag,
         .prefetch,
+        .barrier,
         .set_err_return_trace,
         .vector_store_elem,
         .c_va_end,
@@ -1855,6 +1861,7 @@ pub fn mustLower(air: Air, inst: Air.Inst.Index, ip: *const InternPool) bool {
         .atomic_store_seq_cst,
         .atomic_rmw,
         .prefetch,
+        .barrier,
         .wasm_memory_grow,
         .set_err_return_trace,
         .vector_store_elem,

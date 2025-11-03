@@ -316,6 +316,7 @@ const Writer = struct {
             .cmpxchg_weak, .cmpxchg_strong => try w.writeCmpxchg(s, inst),
             .atomic_load => try w.writeAtomicLoad(s, inst),
             .prefetch => try w.writePrefetch(s, inst),
+            .barrier => try w.writeBarrier(s, inst),
             .atomic_store_unordered => try w.writeAtomicStore(s, inst, .unordered),
             .atomic_store_monotonic => try w.writeAtomicStore(s, inst, .monotonic),
             .atomic_store_release => try w.writeAtomicStore(s, inst, .release),
@@ -608,6 +609,11 @@ const Writer = struct {
         try s.print(", {s}, {d}, {s}", .{
             @tagName(prefetch.rw), prefetch.locality, @tagName(prefetch.cache),
         });
+    }
+
+    fn writeBarrier(w: *Writer, s: *std.Io.Writer, inst: Air.Inst.Index) Error!void {
+        const barrier_options = w.air.instructions.items(.data)[@intFromEnum(inst)].barrier;
+        try s.print("{any}", .{barrier_options});
     }
 
     fn writeAtomicStore(

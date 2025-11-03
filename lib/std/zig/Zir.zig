@@ -2013,6 +2013,9 @@ pub const Inst = struct {
         /// The `@prefetch` builtin.
         /// `operand` is payload index to `BinNode`.
         prefetch,
+        /// The `@barrier` builtin.
+        /// `operand` is payload index to `UnNode`.
+        barrier,
         /// Implement builtin `@setFloatMode`.
         /// `operand` is payload index to `UnNode`.
         set_float_mode,
@@ -3503,6 +3506,7 @@ pub const Inst = struct {
         prefetch_options,
         export_options,
         extern_options,
+        barrier_options,
         type_info,
         branch_hint,
         clobbers,
@@ -4426,6 +4430,7 @@ fn findTrackableInner(
                 .wasm_memory_size,
                 .wasm_memory_grow,
                 .prefetch,
+                .barrier,
                 .set_float_mode,
                 .error_cast,
                 .breakpoint,

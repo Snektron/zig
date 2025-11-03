@@ -605,6 +605,7 @@ fn genBody(self: *Self, body: []const Air.Inst.Index) InnerError!void {
             .aggregate_init  => try self.airAggregateInit(inst),
             .union_init      => try self.airUnionInit(inst),
             .prefetch        => try self.airPrefetch(inst),
+            .barrier         => @panic("TODO try self.airBarrier(inst)"),
             .mul_add         => @panic("TODO try self.airMulAdd(inst)"),
             .addrspace_cast  => @panic("TODO try self.airAddrSpaceCast(int)"),
 

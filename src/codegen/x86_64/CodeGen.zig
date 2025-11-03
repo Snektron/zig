@@ -171518,6 +171518,7 @@ fn genBody(cg: *CodeGen, body: []const Air.Inst.Index) InnerError!void {
                 const res = try cg.tempInit(.void, .none);
                 try res.finish(inst, &.{prefetch.ptr}, &ops, cg);
             },
+            .barrier => return cg.fail("TODO implement barrier", .{}),
             .mul_add => |air_tag| {
                 const pl_op = air_datas[@intFromEnum(inst)].pl_op;
                 const bin_op = cg.air.extraData(Air.Bin, pl_op.payload).data;

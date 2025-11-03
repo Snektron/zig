@@ -1407,6 +1407,7 @@ fn analyzeBodyInner(
                     .wasm_memory_size   => try sema.zirWasmMemorySize(    block, extended),
                     .wasm_memory_grow   => try sema.zirWasmMemoryGrow(    block, extended),
                     .prefetch           => try sema.zirPrefetch(          block, extended),
+                    .barrier            => try sema.zirBarrier(           block, extended),
                     .error_cast         => try sema.zirErrorCast(         block, extended),
                     .select             => try sema.zirSelect(            block, extended),
                     .int_from_error     => try sema.zirIntFromError(      block, extended),
@@ -25711,6 +25712,130 @@ fn zirPrefetch(
     return .void_value;
 }
 
+fn zirBarrier(
+    sema: *Sema,
+    block: *Block,
+    extended: Zir.Inst.Extended.InstData,
+) CompileError!Air.Inst.Ref {
+    const extra = sema.code.extraData(Zir.Inst.UnNode, extended.operand).data;
+    const builtin_src = block.nodeOffset(extra.node);
+    const opts_src = block.builtinCallArgSrc(extra.node, 0);
+    const target = sema.pt.zcu.getTarget();
+
+    const options = blk: {
+        const opt_ty = try sema.getBuiltinType(opts_src, .BarrierOptions);
+        const opts = try sema.coerce(block, opt_ty, try sema.resolveInst(extra.operand), opts_src);
+        const opts_val = try sema.resolveConstDefinedValue(block, opts_src, opts, .{ .simple = .barrier_options });
+        break :blk try sema.interpretBuiltinType(block, opts_src, opts_val, std.builtin.BarrierOptions);
+    };
+
+    try sema.requireRuntimeBlock(block, builtin_src, null);
+
+    const is_gpu = switch (target.cpu.arch) {
+        .amdgcn, .nvptx, .nvptx64, .spirv32, .spirv64 => true,
+        else => false,
+    };
+
+    // TODO: While the remainder of this function is implemented in such a way
+    // that it would be valid for CPUs, the exact implications of this are currently
+    // unclear. A barrier on a CPU would basically just be a fence. Zig used to have
+    // this functionality, but it was removed as it was unclear whether it was
+    // useful. See https://github.com/ziglang/zig/issues/11650 and
+    // https://github.com/ziglang/zig/pull/21585.
+    const allow_fences = false;
+    if (!is_gpu and !allow_fences) {
+        return sema.fail(block, builtin_src, "@barrier is only allowed on GPU targets", .{});
+    }
+
+    const exec_scope_allowed = switch (options.exec_scope) {
+        // Nothing to sync - in principle, all targets can do this,
+        // in which case the barrier transforms into a fence. See
+        // the comment above on why we don't currently allow this.
+        .thread => allow_fences,
+        // GPUs can synchronize subgroup (warp) and workgroup (block) operations.
+        // TODO: For SPIR-V, this may depend on the shader type.
+        .subgroup, .workgroup => is_gpu,
+        // These sync scopes can currently never be synchronized.
+        .cluster, .device, .system => false,
+    };
+
+    if (!exec_scope_allowed) {
+        return sema.failWithOwnedErrorMsg(block, msg: {
+            const msg = try sema.errMsg(builtin_src, "invalid barrier", .{});
+            errdefer msg.destroy(sema.gpa);
+            // TODO: change opts_src to the actual field?
+            try sema.errNote(opts_src, msg, "execution scope '{s}' is not allowed on target {s}-{s}", .{
+                @tagName(options.exec_scope),
+                @tagName(target.cpu.arch.family()),
+                @tagName(target.os.tag),
+            });
+            break :msg msg;
+        });
+    }
+
+    if (options.mem) |mem_opts| {
+        const mem_scope_allowed = switch (mem_opts.scope) {
+            // All systems have these memory spaces. They can convert
+            // into eachother; if an environment has no notion of a
+            // 'thread-local fence', then a .device fence would also
+            // be a valid thread sync. If a device does not have external
+            // peripherals connected to the memory bus, then .device and
+            // .system are the same.
+            .thread, .device, .system => true,
+
+            // GPUs except NVIDIA's have this scope.
+            .subgroup => is_gpu and !target.cpu.arch.isNvptx(),
+
+            // All GPUs additionally have these sync scopes.
+            .workgroup => is_gpu,
+
+            // Only NVIDIA has this sync scope.
+            .cluster => target.cpu.arch.isNvptx(),
+        };
+
+        if (!mem_scope_allowed) {
+            return sema.failWithOwnedErrorMsg(block, msg: {
+                const msg = try sema.errMsg(builtin_src, "invalid barrier", .{});
+                errdefer msg.destroy(sema.gpa);
+                // TODO: change opts_src to the actual field?
+                try sema.errNote(opts_src, msg, "memory scope '{s}' is not allowed on target {s}-{s}", .{
+                    @tagName(mem_opts.scope),
+                    @tagName(target.cpu.arch.family()),
+                    @tagName(target.os.tag),
+                });
+                break :msg msg;
+            });
+        }
+
+        const order_allowed = switch (mem_opts.order) {
+            .acquire, .release, .acq_rel => true,
+            // TODO: It seems that .seq_cst is also valid on some targets
+            // (judging from LLVM) [citation needed], but not sure what that
+            // really entails. Skip for now.
+            else => false,
+        };
+
+        if (!order_allowed) {
+            return sema.failWithOwnedErrorMsg(block, msg: {
+                const msg = try sema.errMsg(builtin_src, "invalid barrier", .{});
+                errdefer msg.destroy(sema.gpa);
+                // TODO: change opts_src to the actual field?
+                try sema.errNote(opts_src, msg, "memory order '{s}' is not allowed", .{
+                    @tagName(mem_opts.order),
+                });
+                break :msg msg;
+            });
+        }
+    }
+
+    _ = try block.addInst(.{
+        .tag = .barrier,
+        .data = .{ .barrier = options },
+    });
+
+    return .void_value;
+}
+
 fn resolveExternOptions(
     sema: *Sema,
     block: *Block,
@@ -25948,6 +26073,7 @@ fn zirBuiltinValue(sema: *Sema, block: *Block, extended: Zir.Inst.Extended.InstD
         .prefetch_options   => try sema.getBuiltinType(src, .PrefetchOptions),
         .export_options     => try sema.getBuiltinType(src, .ExportOptions),
         .extern_options     => try sema.getBuiltinType(src, .ExternOptions),
+        .barrier_options    => try sema.getBuiltinType(src, .BarrierOptions),
         .type_info          => try sema.getBuiltinType(src, .Type),
         .branch_hint        => try sema.getBuiltinType(src, .BranchHint),
         .clobbers           => try sema.getBuiltinType(src, .@"assembly.Clobbers"),

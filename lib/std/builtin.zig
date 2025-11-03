@@ -569,6 +569,22 @@ pub const AddressSpace = enum(u5) {
 
 /// This data structure is used by the Zig language code generation and
 /// therefore must be kept in sync with the compiler implementation.
+pub const SyncScope = enum(u3) { thread, subgroup, workgroup, cluster, device, system };
+
+/// This data structure is used by the Zig language code generation and
+/// therefore must be kept in sync with the compiler implementation.
+pub const BarrierOptions = struct {
+    exec_scope: SyncScope,
+    mem: ?Mem,
+
+    pub const Mem = struct {
+        scope: SyncScope,
+        order: AtomicOrder,
+    };
+};
+
+/// This data structure is used by the Zig language code generation and
+/// therefore must be kept in sync with the compiler implementation.
 pub const SourceLocation = struct {
     /// The name chosen when compiling. Not a file path.
     module: [:0]const u8,

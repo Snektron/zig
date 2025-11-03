@@ -2775,6 +2775,8 @@ pub const Intrinsic = enum {
     @"amdgcn.workgroup.id.y",
     @"amdgcn.workgroup.id.z",
     @"amdgcn.dispatch.ptr",
+    @"amdgcn.wave.barrier",
+    @"amdgcn.s.barrier",
 
     // NVPTX
     @"nvvm.read.ptx.sreg.tid.x",
@@ -2786,6 +2788,7 @@ pub const Intrinsic = enum {
     @"nvvm.read.ptx.sreg.ctaid.x",
     @"nvvm.read.ptx.sreg.ctaid.y",
     @"nvvm.read.ptx.sreg.ctaid.z",
+    @"nvvm.barrier0",
 
     // WebAssembly
     @"wasm.memory.size",
@@ -3951,6 +3954,16 @@ pub const Intrinsic = enum {
             },
             .attrs = &.{ .nocallback, .nofree, .nosync, .nounwind, .speculatable, .willreturn, .{ .memory = Attribute.Memory.all(.none) } },
         },
+        .@"amdgcn.wave.barrier" = .{
+            .ret_len = 0,
+            .params = &.{},
+            .attrs = &.{ .convergent, .mustprogress, .nocallback, .nofree, .nounwind, .willreturn },
+        },
+        .@"amdgcn.s.barrier" = .{
+            .ret_len = 0,
+            .params = &.{},
+            .attrs = &.{ .convergent, .mustprogress, .nocallback, .nofree, .nounwind, .willreturn },
+        },
 
         .@"nvvm.read.ptx.sreg.tid.x" = .{
             .ret_len = 1,
@@ -4016,6 +4029,11 @@ pub const Intrinsic = enum {
                 .{ .kind = .{ .type = .i32 } },
             },
             .attrs = &.{ .nounwind, .readnone },
+        },
+        .@"nvvm.barrier0" = .{
+            .ret_len = 0,
+            .params = &.{},
+            .attrs = &.{ .convergent, .nocallback, .nounwind },
         },
 
         .@"wasm.memory.size" = .{
@@ -7066,9 +7084,15 @@ pub const MemoryAccessKind = enum(u1) {
     }
 };
 
-pub const SyncScope = enum(u1) {
-    singlethread,
-    system,
+pub const SyncScope = enum(u3) {
+    singlethread = 0,
+    system = 1,
+    wavefront, // AMD warp
+    workgroup, // AMD block
+    block, // NVIDIA block
+    cluster,
+    device, // NVIDIA device
+    agent, // AMD device
 
     pub fn format(sync_scope: SyncScope, w: *Writer) Writer.Error!void {
         return Prefixed.format(.{ .sync_scope = sync_scope, .prefix = "" }, w);
@@ -7079,13 +7103,13 @@ pub const SyncScope = enum(u1) {
         prefix: []const u8,
 
         pub fn format(p: Prefixed, w: *Writer) Writer.Error!void {
-            switch (p.sync_scope) {
+            const name = switch (p.sync_scope) {
                 .system => return,
-                .singlethread => {
-                    var vecs: [2][]const u8 = .{ p.prefix, "syncscope(\"singlethread\")" };
-                    return w.writeVecAll(&vecs);
-                },
-            }
+                inline else => |scope| "syncscope(\"" ++ @tagName(scope) ++ "\")",
+            };
+
+            var vecs: [2][]const u8 = .{ p.prefix, name };
+            return w.writeVecAll(&vecs);
         }
     };
 
@@ -7134,7 +7158,7 @@ const MemoryAccessInfo = packed struct(u32) {
     success_ordering: AtomicOrdering,
     failure_ordering: AtomicOrdering = .none,
     alignment: Alignment = .default,
-    _: u13 = undefined,
+    _: u11 = undefined,
 };
 
 pub const FastMath = packed struct(u8) {

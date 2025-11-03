@@ -842,6 +842,7 @@ pub fn analyze(isel: *Select, air_body: []const Air.Inst.Index) !void {
             air_inst_index = air_body[air_body_index];
             continue :air_tag air_tags[@intFromEnum(air_inst_index)];
         },
+        .barrier => unreachable, // TODO
     }
     assert(air_body_index == air_body.len);
     isel.def_order.shrinkRetainingCapacity(initial_def_order_len);

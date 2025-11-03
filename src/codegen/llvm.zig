@@ -5054,6 +5054,7 @@ pub const FuncGen = struct {
                 .union_init     => try self.airUnionInit(inst),
                 .prefetch       => try self.airPrefetch(inst),
                 .addrspace_cast => try self.airAddrSpaceCast(inst),
+                .barrier        => try self.airBarrier(inst),
 
                 .is_named_enum_value => try self.airIsNamedEnumValue(inst),
                 .error_set_has_value => try self.airErrorSetHasValue(inst),
@@ -11141,6 +11142,56 @@ pub const FuncGen = struct {
         return self.wip.cast(.addrspacecast, operand, try o.lowerType(pt, inst_ty), "");
     }
 
+    fn airBarrier(self: *FuncGen, inst: Air.Inst.Index) !Builder.Value {
+        const options = self.air.instructions.items(.data)[@intFromEnum(inst)].barrier;
+
+        const zcu = self.ng.pt.zcu;
+        const target = zcu.getTarget();
+
+        if (options.mem) |mem_opts| {
+            switch (mem_opts.order) {
+                .release, .acq_rel => {
+                    _ = try self.wip.fence(toLlvmSyncScope(mem_opts.scope, target).?, .release);
+                },
+                else => {},
+            }
+        }
+
+        switch (target.cpu.arch) {
+            .nvptx, .nvptx64 => switch (options.exec_scope) {
+                .subgroup => unreachable, // TODO
+                .workgroup => _ = try self.wip.callIntrinsic(.normal, .none, .@"nvvm.barrier0", &.{}, &.{}, ""),
+                .thread,
+                .cluster,
+                .device,
+                .system,
+                => unreachable,
+            },
+            .spirv32, .spirv64 => unreachable, // TODO
+            .amdgcn => switch (options.exec_scope) {
+                .subgroup => _ = try self.wip.callIntrinsic(.normal, .none, .@"amdgcn.wave.barrier", &.{}, &.{}, ""),
+                .workgroup => _ = try self.wip.callIntrinsic(.normal, .none, .@"amdgcn.s.barrier", &.{}, &.{}, ""),
+                .thread,
+                .cluster,
+                .device,
+                .system,
+                => unreachable,
+            },
+            else => unreachable,
+        }
+
+        if (options.mem) |mem_opts| {
+            switch (mem_opts.order) {
+                .acquire, .acq_rel => {
+                    _ = try self.wip.fence(toLlvmSyncScope(mem_opts.scope, target).?, .acquire);
+                },
+                else => {},
+            }
+        }
+
+        return .none;
+    }
+
     fn workIntrinsic(
         self: *FuncGen,
         dimension: u32,
@@ -11969,7 +12020,31 @@ fn toLlvmCallConvTag(cc_tag: std.builtin.CallingConvention.Tag, target: *const s
     };
 }
 
-/// Convert a zig-address space to an llvm address space.
+/// Convert a Zig sync scope to an llvm sync scope.
+fn toLlvmSyncScope(scope: std.builtin.SyncScope, target: *const std.Target) ?Builder.SyncScope {
+    return switch (target.cpu.arch) {
+        .nvptx, .nvptx64 => switch (scope) {
+            .thread => .singlethread,
+            .subgroup => null,
+            .workgroup => .block,
+            .cluster => .cluster,
+            .device => .device,
+            .system => .system,
+        },
+        .amdgcn => switch (scope) {
+            .thread => .singlethread,
+            .subgroup => .wavefront,
+            .workgroup => .workgroup,
+            .cluster => null,
+            .device => .agent,
+            .system => .system,
+        },
+        .spirv32, .spirv64 => unreachable, // TODO
+        else => unreachable,
+    };
+}
+
+/// Convert a Zig address space to an llvm address space.
 fn toLlvmAddressSpace(address_space: std.builtin.AddressSpace, target: *const std.Target) Builder.AddrSpace {
     for (llvmAddrSpaceInfo(target)) |info| if (info.zig == address_space) return info.llvm;
     unreachable;

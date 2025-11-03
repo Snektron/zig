@@ -672,7 +672,7 @@ fn legalizeBody(l: *Legalize, body_start: usize, body_len: usize) Error!void {
                     },
                 }
             },
-            .union_init, .prefetch => {},
+            .union_init, .prefetch, .barrier => {},
             .mul_add => if (l.features.has(.scalarize_mul_add)) {
                 const pl_op = l.air_instructions.items(.data)[@intFromEnum(inst)].pl_op;
                 if (l.typeOf(pl_op.operand).isVector(zcu)) continue :inst try l.scalarize(inst, .pl_op_bin);

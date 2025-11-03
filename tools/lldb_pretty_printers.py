@@ -554,9 +554,10 @@ type_tag_handlers = {
     'float_mode': lambda payload: 'std.builtin.FloatMode',
     'reduce_op': lambda payload: 'std.builtin.ReduceOp',
     'modifier': lambda payload: 'std.builtin.CallModifier',
-    'prefetch_options': lambda payload: 'std.builtin.PrefetchOptions',
+    'barrier_options': lambda payload: 'std.builtin.BarrierOptions',
     'export_options': lambda payload: 'std.builtin.ExportOptions',
     'extern_options': lambda payload: 'std.builtin.ExternOptions',
+    'prefetch_options': lambda payload: 'std.builtin.PrefetchOptions',
     'type_info': lambda payload: 'std.builtin.Type',
 
     'enum_literal': lambda payload: '@TypeOf(.enum_literal)',

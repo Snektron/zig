@@ -410,6 +410,7 @@ pub const BuiltinDecl = enum {
     PrefetchOptions,
     ExportOptions,
     ExternOptions,
+    BarrierOptions,
     BranchHint,
 
     Type,
@@ -486,6 +487,7 @@ pub const BuiltinDecl = enum {
             .PrefetchOptions,
             .ExportOptions,
             .ExternOptions,
+            .BarrierOptions,
             .BranchHint,
             .assembly,
             .@"assembly.Clobbers",

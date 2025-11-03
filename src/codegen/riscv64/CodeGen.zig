@@ -1546,6 +1546,7 @@ fn genBody(func: *Func, body: []const Air.Inst.Index) InnerError!void {
             .prefetch        => try func.airPrefetch(inst),
             .mul_add         => try func.airMulAdd(inst),
             .addrspace_cast  => return func.fail("TODO: addrspace_cast", .{}),
+            .barrier         => return func.fail("TODO: barrier", .{}),
 
             .@"try"          =>  try func.airTry(inst),
             .try_cold        =>  try func.airTry(inst),

@@ -762,6 +762,7 @@ pub const SimpleComptimeReason = enum(u32) {
     wasm_memory_index,
     work_group_dim_index,
     clobber,
+    barrier_options,
 
     // Evaluating at comptime because types must be comptime-known.
     // Reasons other than `.type` are just more specific messages.
@@ -843,6 +844,7 @@ pub const SimpleComptimeReason = enum(u32) {
             .wasm_memory_index    => "wasm memory index must be comptime-known",
             .work_group_dim_index => "work group dimension index must be comptime-known",
             .clobber              => "clobber must be comptime-known",
+            .barrier_options      => "barrier options must be comptime-known",
 
             .type                => "types must be comptime-known",
             .array_sentinel      => "array sentinel value must be comptime-known",

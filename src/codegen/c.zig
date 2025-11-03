@@ -3570,6 +3570,7 @@ fn genBodyInner(f: *Function, body: []const Air.Inst.Index) Error!void {
             .union_init       => try airUnionInit(f, inst),
             .prefetch         => try airPrefetch(f, inst),
             .addrspace_cast   => return f.fail("TODO: C backend: implement addrspace_cast", .{}),
+            .barrier          => return f.fail("TODO: C backend: implement barrier", .{}),
 
             .@"try"       => try airTry(f, inst),
             .try_cold     => try airTry(f, inst),
